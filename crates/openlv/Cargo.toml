@@ -1,0 +1,43 @@
+[package]
+name = "openlv"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+name = "openlv"
+path = "src/lib.rs"
+
+[[example]]
+name = "client"
+path = "../../examples/client/main.rs"
+
+[dependencies]
+aes-gcm = "0.10"
+async-trait = "0.1"
+base64 = "0.22"
+crypto_secretbox = { version = "0.1", features = ["salsa20"] }
+aead = "0.5"
+futures = "0.3"
+mqtt5 = "0.32"
+rand = "0.8"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+webrtc = "0.11"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[[example]]
+name = "dapp"
+path = "../../examples/app/main.rs"
+
+[[example]]
+name = "e2e_client"
+path = "../../examples/e2e_client/main.rs"
