@@ -1,7 +1,12 @@
 [package]
 name = "openlv"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
+description = "a secure peer-to-peer wallet connectivity protocol"
+license = "GPL-3.0"
+documentation = "https://openlv.rs"
+homepage = "https://openlv.rs"
+repository = "https://github.com/open-lavatory/openlv-rs"
 
 [lib]
 name = "openlv"
