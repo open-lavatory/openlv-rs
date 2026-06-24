@@ -1,8 +1,8 @@
 <p align="center">
   <a href="https://openlv.sh">
     <picture>
-      <source srcset="./docs/public/openlv_logo_dark.svg" media="(prefers-color-scheme: dark)">
-      <img src="./docs/public/openlv_logo_light.svg" alt="Open Lavatory" width="auto" height="60">
+      <source srcset="https://raw.githubusercontent.com/v3xlabs/open-lavatory/refs/heads/master/docs/public/openlv_logo_dark.svg" media="(prefers-color-scheme: dark)">
+      <img src="https://raw.githubusercontent.com/v3xlabs/open-lavatory/refs/heads/master/docs/public/openlv_logo_light.svg" alt="Open Lavatory" width="auto" height="60">
     </picture>
   </a>
 </p>

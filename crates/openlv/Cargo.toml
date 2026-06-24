@@ -12,10 +12,6 @@ repository = "https://github.com/open-lavatory/openlv-rs"
 name = "openlv"
 path = "src/lib.rs"
 
-[[example]]
-name = "client"
-path = "../../examples/client/main.rs"
-
 [dependencies]
 aes-gcm = "0.10"
 async-trait = "0.1"
@@ -40,9 +36,9 @@ webrtc = "0.11"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [[example]]
-name = "dapp"
-path = "../../examples/app/main.rs"
+name = "client"
+path = "../../examples/client/main.rs"
 
 [[example]]
-name = "e2e_client"
-path = "../../examples/e2e_client/main.rs"
+name = "dapp"
+path = "../../examples/app/main.rs"
