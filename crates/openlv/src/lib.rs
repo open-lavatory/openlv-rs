@@ -4,6 +4,7 @@ pub mod session;
 pub mod signaling;
 pub mod transport;
 pub mod url;
+pub mod utils;
 
 pub use errors::OpenLvError;
 pub use session::{

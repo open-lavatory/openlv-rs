@@ -1,7 +1,5 @@
 use crate::{
-    encryption::{PublicKeyHash, handshake::HandshakeKey},
-    errors::OpenLvError,
-    signaling::SignalingProtocol,
+    encryption::{PublicKeyHash, handshake::HandshakeKey}, errors::OpenLvError, signaling::SignalingProtocol, utils::redact_url,
 };
 use rand::RngCore;
 use regex::Regex;
@@ -59,14 +57,6 @@ impl TryFrom<String> for SessionUri {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         decode_connection_url(&value)
-    }
-}
-
-fn redact_url(url: &str) -> String {
-    if let Some(idx) = url.find('?') {
-        format!("{}?[redacted]", &url[..idx])
-    } else {
-        url.to_string()
     }
 }
 
