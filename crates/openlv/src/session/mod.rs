@@ -29,8 +29,8 @@ use crate::{
         SessionMessage, TransportEvent, TransportLayer, TransportNegotiationMessage, TransportState,
     },
     url::{
-        HandshakeParameters, OPENLV_PROTOCOL_VERSION, SessionUri, decode_connection_url,
-        encode_connection_url, generate_session_id,
+        SessionUri,
+        generate_session_id,
     },
 };
 
@@ -251,7 +251,7 @@ pub async fn connect_session(
     connection_url: &str,
     on_message: RequestHandler,
 ) -> Result<Session, OpenLvError> {
-    let uri = decode_connection_url(connection_url)?;
+    let uri = SessionUri::from_url(connection_url)?;
     let SessionUri::Version1(version1) = uri;
 
     let key_pair = KeyPair::generate()?;
@@ -362,21 +362,6 @@ impl Session {
 
     pub fn subscribe_state(&self) -> broadcast::Receiver<SessionStateObject> {
         self.inner.state_tx.subscribe()
-    }
-
-    pub fn handshake_parameters(&self) -> HandshakeParameters {
-        HandshakeParameters {
-            version: OPENLV_PROTOCOL_VERSION,
-            session_id: self.inner.session_id.clone(),
-            h: self.inner.hash.clone(),
-            k: self.inner.handshake_key.to_hex().to_string(),
-            p: self.inner.protocol.clone(),
-            s: self.inner.server.clone(),
-        }
-    }
-
-    pub fn connection_url(&self) -> String {
-        encode_connection_url(&self.handshake_parameters())
     }
 
     pub fn is_host(&self) -> bool {

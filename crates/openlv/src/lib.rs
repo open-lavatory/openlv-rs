@@ -12,7 +12,7 @@ pub use session::{
     SessionStateObject, connect_session, create_session, dapp, request_handler, wallet,
 };
 pub use signaling::{SignalState, SignalingProtocol};
-pub use url::{HandshakeParameters, SessionUri, decode_connection_url, encode_connection_url};
+pub use url::SessionUri;
 
 /// Convenient re-exports for the most common use cases.
 pub mod prelude {

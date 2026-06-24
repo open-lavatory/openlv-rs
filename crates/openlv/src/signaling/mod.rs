@@ -11,7 +11,7 @@ pub use channel::SignalingChannel;
 pub use layer::{SignalState, SignalingLayer, SignalingProperties};
 pub use message::SignalingMessage;
 
-use crate::{encryption::KeyPair, errors::OpenLvError, url::Version1SessionUri};
+use crate::{encryption::KeyPair, errors::OpenLvError, url::v1::Version1SessionUri};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum SignalingProtocol {

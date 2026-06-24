@@ -1,158 +1,20 @@
 use crate::{
-    encryption::{PublicKeyHash, handshake::HandshakeKey}, errors::OpenLvError, signaling::SignalingProtocol, utils::redact_url,
+    encryption::{PublicKeyHash, handshake::HandshakeKey},
+    errors::OpenLvError,
+    signaling::SignalingProtocol,
+    url::v1::Version1SessionUri,
 };
 use rand::RngCore;
-use regex::Regex;
 use std::fmt::Display;
-use std::sync::LazyLock;
-use url::form_urlencoded;
 
-pub const OPENLV_PROTOCOL_VERSION: u8 = 1;
+pub mod v1;
 
 const URL_SAFE_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-static URI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^openlv://([A-Za-z0-9_-]{16})@(\d+)\?(.+)$").expect("valid URI regex")
-});
-static HASH_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[0-9a-f]{16}$").expect("valid hash regex"));
-static SHARED_KEY_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[0-9a-f]{32}$").expect("valid shared key regex"));
-
 #[derive(Debug, PartialEq, Clone)]
 pub enum SessionUri {
-    Version1(Version1SessionUri),
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Version1SessionUri {
-    pub session_id: String,
-    pub key_hash: PublicKeyHash,
-    pub shared_key: HandshakeKey,
-    pub signaling_protocol: SignalingProtocol,
-    pub signaling_server: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HandshakeParameters {
-    pub version: u8,
-    pub session_id: String,
-    pub h: String,
-    pub k: String,
-    pub p: SignalingProtocol,
-    pub s: String,
-}
-
-impl TryFrom<&str> for SessionUri {
-    type Error = OpenLvError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        decode_connection_url(value)
-    }
-}
-
-impl TryFrom<String> for SessionUri {
-    type Error = OpenLvError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        decode_connection_url(&value)
-    }
-}
-
-pub fn decode_connection_url(url: &str) -> Result<SessionUri, OpenLvError> {
-    if url.trim().is_empty() {
-        return Err(OpenLvError::InvalidUri("URL cannot be empty".into()));
-    }
-
-    if !url.starts_with("openlv://") {
-        return Err(OpenLvError::InvalidUri(format!(
-            "invalid URL format: must start with 'openlv://', got: {}",
-            redact_url(url)
-        )));
-    }
-
-    let captures = URI_REGEX.captures(url).ok_or_else(|| {
-        OpenLvError::InvalidUri(format!("invalid URL format: {}", redact_url(url)))
-    })?;
-
-    let session_id = captures
-        .get(1)
-        .ok_or_else(|| OpenLvError::InvalidUri("session ID missing".into()))?
-        .as_str()
-        .to_string();
-
-    let version: u8 = captures
-        .get(2)
-        .ok_or_else(|| OpenLvError::InvalidUri("version missing".into()))?
-        .as_str()
-        .parse()
-        .map_err(|_| OpenLvError::InvalidUri("invalid version".into()))?;
-
-    if version != OPENLV_PROTOCOL_VERSION {
-        return Err(OpenLvError::InvalidUri(format!(
-            "invalid protocol version: expected {OPENLV_PROTOCOL_VERSION}, got {version}"
-        )));
-    }
-
-    let query_string = captures
-        .get(3)
-        .ok_or_else(|| OpenLvError::InvalidUri("query string missing".into()))?
-        .as_str();
-
-    let query_params: std::collections::HashMap<String, String> =
-        form_urlencoded::parse(query_string.as_bytes())
-            .map(|(key, value)| (key.into_owned(), value.into_owned()))
-            .collect();
-
-    let h = query_params
-        .get("h")
-        .ok_or_else(|| OpenLvError::InvalidUri("h parameter is required".into()))?;
-
-    if !HASH_REGEX.is_match(h) {
-        return Err(OpenLvError::InvalidUri(
-            "invalid public key hash format: must be 16 hex characters".into(),
-        ));
-    }
-
-    let k = query_params
-        .get("k")
-        .ok_or_else(|| OpenLvError::InvalidUri("k parameter is required".into()))?;
-
-    if !SHARED_KEY_REGEX.is_match(k) {
-        return Err(OpenLvError::InvalidUri(
-            "invalid shared key format: must be 32 lowercase hex characters".into(),
-        ));
-    }
-
-    let p = query_params
-        .get("p")
-        .map(|value| SignalingProtocol::from(value.clone()))
-        .unwrap_or(SignalingProtocol::Mqtt);
-
-    let signaling_server = query_params.get("s").cloned().unwrap_or_default();
-
-    Ok(SessionUri::Version1(Version1SessionUri {
-        session_id,
-        key_hash: PublicKeyHash(h.clone()),
-        shared_key: HandshakeKey::from_hex(k)?,
-        signaling_protocol: p,
-        signaling_server,
-    }))
-}
-
-pub fn encode_connection_url(parameters: &HandshakeParameters) -> String {
-    let mut serializer = form_urlencoded::Serializer::new(String::new());
-    serializer.append_pair("h", &parameters.h);
-    serializer.append_pair("k", &parameters.k);
-    serializer.append_pair("p", &parameters.p.to_string());
-    serializer.append_pair("s", &parameters.s);
-    let query = serializer.finish();
-
-    format!(
-        "openlv://{}@{}?{}",
-        parameters.session_id, parameters.version, query
-    )
+    Version1(v1::Version1SessionUri),
 }
 
 pub fn generate_session_id() -> String {
@@ -182,21 +44,32 @@ impl SessionUri {
         })
     }
 
-    pub fn handshake_parameters(&self) -> HandshakeParameters {
+    pub fn to_connection_url(&self) -> String {
         match self {
-            Self::Version1(version1) => HandshakeParameters {
-                version: OPENLV_PROTOCOL_VERSION,
-                session_id: version1.session_id.clone(),
-                h: version1.key_hash.0.clone(),
-                k: version1.shared_key.to_hex().to_string(),
-                p: version1.signaling_protocol.clone(),
-                s: version1.signaling_server.clone(),
-            },
+            Self::Version1(version1) => version1.to_url(),
         }
     }
 
-    pub fn to_connection_url(&self) -> String {
-        encode_connection_url(&self.handshake_parameters())
+    pub fn from_url(url: &str) -> Result<Self, OpenLvError> {
+        let v1 = Version1SessionUri::from_url(url)?;
+
+        Ok(Self::Version1(v1))
+    }
+}
+
+impl TryFrom<&str> for SessionUri {
+    type Error = OpenLvError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::from_url(value)
+    }
+}
+
+impl TryFrom<String> for SessionUri {
+    type Error = OpenLvError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::from_url(&value)
     }
 }
 

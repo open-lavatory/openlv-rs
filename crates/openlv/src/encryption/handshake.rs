@@ -23,6 +23,12 @@ impl std::fmt::Debug for HandshakeKey {
     }
 }
 
+impl ToString for HandshakeKey {
+    fn to_string(&self) -> String {
+        self.hex.to_string()
+    }
+}
+
 impl PartialEq for HandshakeKey {
     fn eq(&self, other: &Self) -> bool {
         self.hex == other.hex
