@@ -1,6 +1,6 @@
 # openlv (Rust)
 
-Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol for interoperability with the TypeScript `@openlv/*` packages.
+Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol for interoperability with the [typescript implementation](https://github.com/v3xlabs/open-lavatory)
 
 ## Parity status
 
@@ -15,7 +15,6 @@ Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol fo
 | MQTT signaling channel | Done |
 | WebRTC transport (`openlv-data`) | Done |
 | Session API (`create_session` / `connect_session`) | Done |
-| GunDB signaling | Not implemented |
 
 ## Usage
 

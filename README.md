@@ -51,7 +51,7 @@ This repository includes the following packages:
 
 | Package                                                                                                                 | Description |
 | ----------------------------------------------------------------------------------------------------------------------- | ----------- |
-| [openlv](./crates/openlv) [![crates](https://img.shields.io/crates/v/openlv.svg?color=orange)](https://crates.io/openlv) |             |
+| [openlv](./crates/openlv) [![crates](https://img.shields.io/crates/v/openlv.svg?color=orange)](https://crates.io/crates/openlv) |             |
 
 | Examples                    | Description |
 | --------------------------- | ----------- |
