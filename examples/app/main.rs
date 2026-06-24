@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     dapp.connect().await?;
-    println!("Connection URL: {}", dapp.connection_url());
+    println!("Connection URL: {}", dapp.uri());
     println!("Waiting for wallet to connect...");
     dapp.wait_for_link().await?;
     println!("Connected!");

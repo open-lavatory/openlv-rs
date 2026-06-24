@@ -112,24 +112,22 @@ mod tests {
 
     #[test]
     fn test_encode_round_trip() {
-        let parameters = HandshakeParameters {
-            version: OPENLV_PROTOCOL_VERSION,
+        let parameters = Version1SessionUri {
             session_id: "k7n8m9x2w5q1p3r6".to_string(),
-            h: "a1b2c3d4e5f60708".to_string(),
-            k: "0123456789abcdef0123456789abcdef".to_string(),
-            p: SignalingProtocol::Mqtt,
-            s: "wss://test.mosquitto.org:8081/mqtt".to_string(),
+            key_hash: PublicKeyHash("a1b2c3d4e5f60708".to_string()),
+            shared_key: HandshakeKey::from_hex("0123456789abcdef0123456789abcdef").unwrap(),
+            signaling_protocol: SignalingProtocol::Mqtt,
+            signaling_server: "wss://test.mosquitto.org:8081/mqtt".to_string(),
         };
 
-        let encoded = encode_connection_url(&parameters);
-        let decoded = decode_connection_url(&encoded).unwrap();
-        let SessionUri::Version1(version1) = decoded;
+        let encoded = parameters.to_url();
+        let decoded = Version1SessionUri::from_url(&encoded).unwrap();
 
-        assert_eq!(version1.session_id, parameters.session_id);
-        assert_eq!(version1.key_hash.0, parameters.h);
-        assert_eq!(version1.shared_key.to_hex(), parameters.k);
-        assert_eq!(version1.signaling_protocol, parameters.p);
-        assert_eq!(version1.signaling_server, parameters.s);
+        assert_eq!(decoded.session_id, parameters.session_id);
+        assert_eq!(decoded.key_hash.0, parameters.key_hash.0);
+        assert_eq!(decoded.shared_key.to_hex(), parameters.shared_key.to_hex());
+        assert_eq!(decoded.signaling_protocol, parameters.signaling_protocol);
+        assert_eq!(decoded.signaling_server, parameters.signaling_server);
     }
 
     #[test]
@@ -145,9 +143,9 @@ mod tests {
 
     #[test]
     fn test_invalid_uri_rejected() {
-        assert!(decode_connection_url("not-a-uri").is_err());
+        assert!(Version1SessionUri::from_url("not-a-uri").is_err());
         assert!(
-            decode_connection_url(
+            Version1SessionUri::from_url(
                 "openlv://short@1?h=abc&k=0123456789abcdef0123456789abcdef&p=mqtt&s=x"
             )
             .is_err()

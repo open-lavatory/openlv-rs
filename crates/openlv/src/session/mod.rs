@@ -19,16 +19,12 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    encryption::{DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, init_hash},
-    errors::OpenLvError,
-    signaling::{
+    encryption::{DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash}, errors::OpenLvError, signaling::{
         SignalState, SignalingLayer, SignalingProperties, SignalingProtocol,
         create_signaling_channel, signaling_layer_from_version1,
-    },
-    transport::{
+    }, transport::{
         SessionMessage, TransportEvent, TransportLayer, TransportNegotiationMessage, TransportState,
-    },
-    url::{
+    }, url::{
         SessionUri,
         generate_session_id,
     },
@@ -86,24 +82,13 @@ pub struct SessionInitParameters {
 ///
 /// Use [`dapp()`] to start a host (dApp) session or [`wallet(url)`](wallet())
 /// to connect as a client (wallet).
+#[derive(Default)]
 pub struct SessionConfig {
     connect_url: Option<String>,
     session_id: Option<String>,
     protocol: Option<SignalingProtocol>,
     server: Option<String>,
     handshake_key: Option<HandshakeKey>,
-}
-
-impl Default for SessionConfig {
-    fn default() -> Self {
-        Self {
-            connect_url: None,
-            session_id: None,
-            protocol: None,
-            server: None,
-            handshake_key: None,
-        }
-    }
 }
 
 impl SessionConfig {
@@ -190,12 +175,8 @@ pub struct Session {
 }
 
 struct SessionInner {
-    session_id: String,
+    uri: SessionUri,
     is_host: bool,
-    handshake_key: HandshakeKey,
-    hash: String,
-    protocol: SignalingProtocol,
-    server: String,
     status: RwLock<SessionState>,
     state_tx: broadcast::Sender<SessionStateObject>,
     request_tx: broadcast::Sender<Value>,
@@ -234,13 +215,16 @@ pub async fn create_session(
         },
     );
 
-    Ok(build_session(
-        session_id,
-        init_hash.is_host,
+    let uri = SessionUri::new(
+        PublicKeyHash::from(&key_pair.encryption_key),
         handshake_key,
-        init_hash.hash,
         protocol,
         server,
+    );
+
+    Ok(build_session(
+        uri,
+        true,
         signaling,
         key_pair.decryption_key,
         on_message,
@@ -252,7 +236,7 @@ pub async fn connect_session(
     on_message: RequestHandler,
 ) -> Result<Session, OpenLvError> {
     let uri = SessionUri::from_url(connection_url)?;
-    let SessionUri::Version1(version1) = uri;
+    let SessionUri::Version1(version1) = uri.clone();
 
     let key_pair = KeyPair::generate()?;
     let init_hash = init_hash(Some(&version1.key_hash.0), &key_pair.encryption_key)?;
@@ -260,12 +244,8 @@ pub async fn connect_session(
     let signaling = signaling_layer_from_version1(&version1, &key_pair, init_hash.is_host)?;
 
     Ok(build_session(
-        version1.session_id.clone(),
+        uri,
         init_hash.is_host,
-        version1.shared_key.clone(),
-        init_hash.hash,
-        version1.signaling_protocol.clone(),
-        version1.signaling_server.clone(),
         signaling,
         key_pair.decryption_key,
         on_message,
@@ -274,12 +254,8 @@ pub async fn connect_session(
 
 #[allow(clippy::too_many_arguments)]
 fn build_session(
-    session_id: String,
+    uri: SessionUri,
     is_host: bool,
-    handshake_key: HandshakeKey,
-    hash: String,
-    protocol: SignalingProtocol,
-    server: String,
     signaling: SignalingLayer,
     decryption_key: DecryptionKey,
     on_message: RequestHandler,
@@ -292,12 +268,8 @@ fn build_session(
 
     Session {
         inner: Arc::new(SessionInner {
-            session_id,
+            uri,
             is_host,
-            handshake_key,
-            hash,
-            protocol,
-            server,
             status: RwLock::new(SessionState::Created),
             state_tx,
             request_tx,
@@ -366,6 +338,10 @@ impl Session {
 
     pub fn is_host(&self) -> bool {
         self.inner.is_host
+    }
+
+    pub fn uri(&self) -> &SessionUri {
+        &self.inner.uri
     }
 
     /// Wait until the WebRTC transport reports connected.
