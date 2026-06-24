@@ -1,3 +1,9 @@
+/*!
+Open Lavatory (openlv for short) is a secure peer-to-peer wallet connectivity protocol.
+
+It allows for establishing a secure connection between a dApp and a wallet leveraging public infrastructure, p2p, and encryption.
+*/
+
 pub mod encryption;
 pub mod errors;
 pub mod session;
