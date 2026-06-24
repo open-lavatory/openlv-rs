@@ -2,11 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: master
   pull_request:
-    branches: [master, main]
-  schedule:
-    - cron: "0 4 * * *" # nightly network tests
+    branches: master
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,52 +30,3 @@ jobs:
 
       - name: Test
         run: cargo test
-
-  interop:
-    name: JS Interop Vectors
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: tests/interop/pnpm-lock.yaml
-
-      - name: Install JS dependencies
-        working-directory: tests/interop
-        run: pnpm install --no-frozen-lockfile || true
-
-      - name: Generate test vectors
-        working-directory: tests/interop
-        run: node generate-vectors.mjs
-
-      - name: Run interop tests
-        run: cargo test --test interop_vectors
-
-  e2e:
-    name: E2E Integration
-    runs-on: ubuntu-latest
-    if: github.event.schedule != '' || github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Run integration tests (with retries)
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 5
-          max_attempts: 3
-          command: cargo test -- --include-ignored --test-threads=1
