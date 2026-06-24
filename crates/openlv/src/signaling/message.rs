@@ -5,10 +5,7 @@ use serde_json::Value;
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SignalingMessage {
     #[serde(rename = "flash")]
-    Flash {
-        payload: Value,
-        timestamp: u64,
-    },
+    Flash { payload: Value, timestamp: u64 },
     #[serde(rename = "pubkey")]
     Pubkey {
         payload: PubkeyPayload,
@@ -21,10 +18,7 @@ pub enum SignalingMessage {
         timestamp: u64,
     },
     #[serde(rename = "data")]
-    Data {
-        payload: Value,
-        timestamp: u64,
-    },
+    Data { payload: Value, timestamp: u64 },
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Clone)]

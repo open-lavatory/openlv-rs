@@ -1,5 +1,5 @@
 use crate::{
-    encryption::{handshake::HandshakeKey, PublicKeyHash},
+    encryption::{PublicKeyHash, handshake::HandshakeKey},
     errors::OpenLvError,
     signaling::SignalingProtocol,
 };
@@ -82,9 +82,9 @@ pub fn decode_connection_url(url: &str) -> Result<SessionUri, OpenLvError> {
         )));
     }
 
-    let captures = URI_REGEX
-        .captures(url)
-        .ok_or_else(|| OpenLvError::InvalidUri(format!("invalid URL format: {}", redact_url(url))))?;
+    let captures = URI_REGEX.captures(url).ok_or_else(|| {
+        OpenLvError::InvalidUri(format!("invalid URL format: {}", redact_url(url)))
+    })?;
 
     let session_id = captures
         .get(1)
@@ -273,17 +273,21 @@ mod tests {
     fn test_generate_session_id_length() {
         let session_id = generate_session_id();
         assert_eq!(session_id.len(), 16);
-        assert!(session_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+        assert!(
+            session_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        );
     }
 
     #[test]
     fn test_invalid_uri_rejected() {
         assert!(decode_connection_url("not-a-uri").is_err());
-        assert!(decode_connection_url(
-            "openlv://short@1?h=abc&k=0123456789abcdef0123456789abcdef&p=mqtt&s=x"
-        )
-        .is_err());
+        assert!(
+            decode_connection_url(
+                "openlv://short@1?h=abc&k=0123456789abcdef0123456789abcdef&p=mqtt&s=x"
+            )
+            .is_err()
+        );
     }
 }

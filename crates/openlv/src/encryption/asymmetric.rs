@@ -87,8 +87,7 @@ impl EncryptionKey {
             .encrypt(nonce, message.as_bytes())
             .map_err(|error| OpenLvError::Encryption(error.to_string()))?;
 
-        let mut payload =
-            Vec::with_capacity(PUBLIC_KEY_BYTES + NONCE_BYTES + ciphertext.len());
+        let mut payload = Vec::with_capacity(PUBLIC_KEY_BYTES + NONCE_BYTES + ciphertext.len());
         payload.extend_from_slice(ephemeral_public.as_bytes());
         payload.extend_from_slice(nonce);
         payload.extend_from_slice(&ciphertext);
@@ -148,8 +147,7 @@ impl DecryptionKey {
             .decrypt(nonce, ciphertext)
             .map_err(|error| OpenLvError::Encryption(error.to_string()))?;
 
-        String::from_utf8(plaintext)
-            .map_err(|error| OpenLvError::Encryption(error.to_string()))
+        String::from_utf8(plaintext).map_err(|error| OpenLvError::Encryption(error.to_string()))
     }
 }
 

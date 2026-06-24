@@ -2,9 +2,7 @@ use regex::Regex;
 
 use crate::OpenLvError;
 
-use super::{
-    NtfyConnectionInfo
-};
+use super::NtfyConnectionInfo;
 
 pub fn parse_ntfy_url(url: &str) -> Result<NtfyConnectionInfo, OpenLvError> {
     let regex = Regex::new(

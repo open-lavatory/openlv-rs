@@ -1,6 +1,6 @@
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes128Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
 use rand::RngCore;
 
@@ -17,7 +17,9 @@ pub struct HandshakeKey {
 
 impl std::fmt::Debug for HandshakeKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HandshakeKey").field("hex", &self.hex).finish()
+        f.debug_struct("HandshakeKey")
+            .field("hex", &self.hex)
+            .finish()
     }
 }
 
@@ -97,8 +99,7 @@ impl HandshakeKey {
             .decrypt(nonce, encrypted)
             .map_err(|error| OpenLvError::Encryption(error.to_string()))?;
 
-        String::from_utf8(plaintext)
-            .map_err(|error| OpenLvError::Encryption(error.to_string()))
+        String::from_utf8(plaintext).map_err(|error| OpenLvError::Encryption(error.to_string()))
     }
 }
 

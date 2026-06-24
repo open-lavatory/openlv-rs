@@ -32,11 +32,7 @@ impl WireRecipient {
     }
 
     pub fn for_role(is_host: bool) -> Self {
-        if is_host {
-            Self::Host
-        } else {
-            Self::Client
-        }
+        if is_host { Self::Host } else { Self::Client }
     }
 }
 
@@ -62,19 +58,13 @@ pub fn compose_frame(
 
 pub fn parse_frame(payload: &str) -> Result<WireFrame, OpenLvError> {
     if payload.len() < 2 {
-        return Err(OpenLvError::WireFrame(
-            "wire frame is too short".into(),
-        ));
+        return Err(OpenLvError::WireFrame("wire frame is too short".into()));
     }
 
     let prefix = match &payload[..1] {
         HANDSHAKE_PREFIX => WirePrefix::Handshake,
         ENCRYPTED_PREFIX => WirePrefix::Encrypted,
-        _ => {
-            return Err(OpenLvError::WireFrame(
-                "invalid wire frame prefix".into(),
-            ))
-        }
+        _ => return Err(OpenLvError::WireFrame("invalid wire frame prefix".into())),
     };
 
     let recipient = WireRecipient::from_char(

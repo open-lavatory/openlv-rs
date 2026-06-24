@@ -19,19 +19,18 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    encryption::{init_hash, DecryptionKey, EncryptionKey, HandshakeKey, KeyPair},
+    encryption::{DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, init_hash},
     errors::OpenLvError,
     signaling::{
-        create_signaling_channel, signaling_layer_from_version1, SignalState, SignalingLayer,
-        SignalingProperties, SignalingProtocol,
+        SignalState, SignalingLayer, SignalingProperties, SignalingProtocol,
+        create_signaling_channel, signaling_layer_from_version1,
     },
     transport::{
-        SessionMessage, TransportEvent, TransportLayer, TransportNegotiationMessage,
-        TransportState,
+        SessionMessage, TransportEvent, TransportLayer, TransportNegotiationMessage, TransportState,
     },
     url::{
-        decode_connection_url, encode_connection_url, generate_session_id, HandshakeParameters,
-        SessionUri, OPENLV_PROTOCOL_VERSION,
+        HandshakeParameters, OPENLV_PROTOCOL_VERSION, SessionUri, decode_connection_url,
+        encode_connection_url, generate_session_id,
     },
 };
 
@@ -569,22 +568,21 @@ impl SessionInner {
         let mut message_rx = self.signaling.subscribe_messages();
 
         while let Ok(payload) = message_rx.recv().await {
-            let negotiation = match serde_json::from_value::<TransportNegotiationMessage>(
-                payload.clone(),
-            ) {
-                Ok(nego) => Some(nego),
-                Err(_) => serde_json::from_value::<SessionMessage>(payload)
-                    .ok()
-                    .and_then(|msg| match msg {
-                        SessionMessage::Request { payload, .. } => {
-                            serde_json::from_value::<TransportNegotiationMessage>(payload).ok()
-                        }
-                        other => {
-                            let _ = self.response_tx.send(other);
-                            None
-                        }
-                    }),
-            };
+            let negotiation =
+                match serde_json::from_value::<TransportNegotiationMessage>(payload.clone()) {
+                    Ok(nego) => Some(nego),
+                    Err(_) => serde_json::from_value::<SessionMessage>(payload)
+                        .ok()
+                        .and_then(|msg| match msg {
+                            SessionMessage::Request { payload, .. } => {
+                                serde_json::from_value::<TransportNegotiationMessage>(payload).ok()
+                            }
+                            other => {
+                                let _ = self.response_tx.send(other);
+                                None
+                            }
+                        }),
+                };
 
             if let Some(negotiation) = negotiation {
                 if let Err(error) = self.transport.handle(negotiation).await {
@@ -596,10 +594,7 @@ impl SessionInner {
 
     /// Consumes transport events: outbound negotiation messages are relayed
     /// over signaling, inbound data-channel payloads are decrypted and routed.
-    async fn run_transport_event_loop(
-        self: Arc<Self>,
-        mut events: mpsc::Receiver<TransportEvent>,
-    ) {
+    async fn run_transport_event_loop(self: Arc<Self>, mut events: mpsc::Receiver<TransportEvent>) {
         while let Some(event) = events.recv().await {
             match event {
                 TransportEvent::Negotiation(negotiation) => {
@@ -683,9 +678,9 @@ impl SessionInner {
                 .relying_key
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let relying_key = relying_key.as_ref().ok_or_else(|| {
-                OpenLvError::Session("relying party public key not found".into())
-            })?;
+            let relying_key = relying_key
+                .as_ref()
+                .ok_or_else(|| OpenLvError::Session("relying party public key not found".into()))?;
             relying_key.encrypt(&plaintext)?
         };
 

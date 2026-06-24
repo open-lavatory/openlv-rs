@@ -4,19 +4,19 @@
 
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
+use webrtc::api::APIBuilder;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::APIBuilder;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
 
-use super::{message::TransportNegotiationMessage, TransportState};
+use super::{TransportState, message::TransportNegotiationMessage};
 use crate::errors::OpenLvError;
 
 pub const DATA_CHANNEL_LABEL: &str = "openlv-data";
@@ -106,8 +106,12 @@ impl TransportLayer {
                 let event_tx = event_tx.clone();
                 Box::pin(async move {
                     let Some(candidate) = candidate else { return };
-                    let Ok(json) = candidate.to_json() else { return };
-                    let Ok(payload) = serde_json::to_string(&json) else { return };
+                    let Ok(json) = candidate.to_json() else {
+                        return;
+                    };
+                    let Ok(payload) = serde_json::to_string(&json) else {
+                        return;
+                    };
 
                     let _ = event_tx
                         .send(TransportEvent::Negotiation(

@@ -72,10 +72,7 @@ impl SignalingChannel for MqttChannel {
     }
 
     async fn publish(&self, payload: &str) -> Result<(), OpenLvError> {
-        let client = self
-            .client
-            .as_ref()
-            .ok_or(OpenLvError::NoConnection)?;
+        let client = self.client.as_ref().ok_or(OpenLvError::NoConnection)?;
 
         client
             .publish(self.topic.clone(), payload.as_bytes())

@@ -12,6 +12,10 @@ repository = "https://github.com/open-lavatory/openlv-rs"
 name = "openlv"
 path = "src/lib.rs"
 
+[features]
+default = ["alloy"]
+alloy = []
+
 [dependencies]
 aes-gcm = "0.10"
 async-trait = "0.1"

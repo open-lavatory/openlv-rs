@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use regex::Regex;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::channel::{MessageHandler, SignalingChannel};
@@ -102,7 +101,9 @@ impl SignalingChannel for NtfyChannel {
 
         tokio::time::timeout(tokio::time::Duration::from_secs(10), ready_rx)
             .await
-            .map_err(|_| OpenLvError::Signaling("ntfy server did not confirm open within 10s".into()))?
+            .map_err(|_| {
+                OpenLvError::Signaling("ntfy server did not confirm open within 10s".into())
+            })?
             .map_err(|_| OpenLvError::Signaling("ntfy ready sender dropped".into()))?;
 
         self.http_client = Some(reqwest::Client::new());

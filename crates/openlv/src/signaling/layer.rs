@@ -6,17 +6,16 @@
 use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 
 use super::{
     channel::SignalingChannel,
     message::{PubkeyPayload, SignalingMessage},
-    wire::{compose_frame, is_recipient, parse_frame, WirePrefix, WireRecipient},
+    wire::{WirePrefix, WireRecipient, compose_frame, is_recipient, parse_frame},
 };
 use crate::{
     encryption::{
-        parse_encryption_key, validate_public_key_hash, DecryptionKey, EncryptionKey,
-        HandshakeKey,
+        DecryptionKey, EncryptionKey, HandshakeKey, parse_encryption_key, validate_public_key_hash,
     },
     errors::OpenLvError,
 };
@@ -223,9 +222,10 @@ impl SignalingInner {
         let plaintext = serde_json::to_string(&message)?;
         let body = match prefix {
             WirePrefix::Handshake => {
-                let handshake_key = self.properties.handshake_key.as_ref().ok_or_else(|| {
-                    OpenLvError::Signaling("handshake key is required".into())
-                })?;
+                let handshake_key =
+                    self.properties.handshake_key.as_ref().ok_or_else(|| {
+                        OpenLvError::Signaling("handshake key is required".into())
+                    })?;
                 handshake_key.encrypt(&plaintext)?
             }
             WirePrefix::Encrypted => {
@@ -254,9 +254,10 @@ impl SignalingInner {
 
         let plaintext = match frame.prefix {
             WirePrefix::Handshake => {
-                let handshake_key = self.properties.handshake_key.as_ref().ok_or_else(|| {
-                    OpenLvError::Signaling("handshake key is required".into())
-                })?;
+                let handshake_key =
+                    self.properties.handshake_key.as_ref().ok_or_else(|| {
+                        OpenLvError::Signaling("handshake key is required".into())
+                    })?;
                 handshake_key.decrypt(&frame.body)?
             }
             WirePrefix::Encrypted => self.properties.decryption_key.decrypt(&frame.body)?,
@@ -344,12 +345,7 @@ impl SignalingInner {
             }
 
             // Ignore ack echoes when already encrypted (harmless race).
-            (
-                WirePrefix::Encrypted,
-                SignalingMessage::Ack { .. },
-                SignalState::Encrypted,
-                _,
-            ) => {
+            (WirePrefix::Encrypted, SignalingMessage::Ack { .. }, SignalState::Encrypted, _) => {
                 // already encrypted, ack echo is redundant
             }
 

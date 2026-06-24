@@ -60,9 +60,9 @@ pub fn create_signaling_channel(
             topic.to_string(),
             server.to_string(),
         )?)),
-        SignalingProtocol::Unsupported(value) => Err(OpenLvError::UnsupportedProtocol(
-            value.clone(),
-        )),
+        SignalingProtocol::Unsupported(value) => {
+            Err(OpenLvError::UnsupportedProtocol(value.clone()))
+        }
     }
 }
 
