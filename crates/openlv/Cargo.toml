@@ -54,3 +54,6 @@ path = "../../examples/client/main.rs"
 [[example]]
 name = "dapp"
 path = "../../examples/app/main.rs"
+
+[dev-dependencies]
+qrcode = { version = "0.14.1", default-features = false }
