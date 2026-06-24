@@ -11,7 +11,7 @@ use crate::errors::OpenLvError;
 pub mod url;
 
 #[derive(Debug, Clone)]
-struct NtfyConnectionInfo {
+pub struct NtfyConnectionInfo {
     host: String,
     protocol: &'static str,
     ws_protocol: &'static str,
