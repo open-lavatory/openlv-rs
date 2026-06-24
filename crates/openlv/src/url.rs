@@ -11,7 +11,7 @@ use url::form_urlencoded;
 
 pub const OPENLV_PROTOCOL_VERSION: u8 = 1;
 
-const URL_SAFE_ALPHABET: &[u8] =
+const URL_SAFE_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 static URI_REGEX: LazyLock<Regex> = LazyLock::new(|| {

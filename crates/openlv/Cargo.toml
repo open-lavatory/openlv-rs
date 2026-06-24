@@ -13,7 +13,7 @@ name = "openlv"
 path = "src/lib.rs"
 
 [features]
-default = ["alloy"]
+default = ["alloy", "runtime-tokio"]
 alloy = []
 runtime-tokio = ["webrtc/runtime-tokio"]
 runtime-smol = ["webrtc/runtime-smol"]
