@@ -15,29 +15,37 @@ path = "src/lib.rs"
 [features]
 default = ["alloy"]
 alloy = []
+runtime-tokio = ["webrtc/runtime-tokio"]
+runtime-smol = ["webrtc/runtime-smol"]
 
 [dependencies]
 aes-gcm = "0.10"
 async-trait = "0.1"
-base64 = "0.22"
-crypto_secretbox = { version = "0.1", features = ["salsa20"] }
-aead = "0.5"
 futures = "0.3"
-mqtt5 = "0.32"
 rand = "0.8"
-regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
 sha2 = "0.10"
+aead = "0.5"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+crypto_secretbox = { version = "0.1", features = ["salsa20"] }
+url = "2"
+
+serde = { version = "1.0", features = ["derive"] }
+regex = "1"
+serde_json = "1.0"
 thiserror = "2"
+tracing = "0.1"
+
+mqtt5 = "0.32"
+webrtc = "0.20.0-alpha.2"
+
+# todo: support for rustls-tls vs others via feature flags?
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# todo: make runtime agnostic via feature flags (runtime-tokio, runtime-smol)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
-tracing = "0.1"
-url = "2"
-uuid = { version = "1", features = ["v4"] }
-webrtc = "0.11"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [[example]]
 name = "client"

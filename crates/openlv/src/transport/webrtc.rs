@@ -1,33 +1,68 @@
-//! WebRTC transport. Instead of callback setters, the transport emits
-//! [`TransportEvent`]s on an mpsc channel handed out at construction; the
-//! session layer consumes them in a single loop.
-
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::{Mutex, broadcast, mpsc};
-use webrtc::api::APIBuilder;
-use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_server::RTCIceServer;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::data_channel::{DataChannel, DataChannelEvent};
+use webrtc::peer_connection::{
+    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
+    RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription,
+    MediaEngine, Registry, register_default_interceptors,
+};
+use webrtc::runtime::{Runtime, default_runtime};
 
 use super::{TransportState, message::TransportNegotiationMessage};
 use crate::errors::OpenLvError;
 
 pub const DATA_CHANNEL_LABEL: &str = "openlv-data";
 
-/// Events the transport emits towards the session layer.
 #[derive(Debug)]
 pub enum TransportEvent {
-    /// SDP/ICE negotiation message that must be relayed over signaling.
     Negotiation(TransportNegotiationMessage),
-    /// Raw (still encrypted) payload received over the data channel.
     Message(String),
+}
+
+struct TransportHandler {
+    event_tx: mpsc::Sender<TransportEvent>,
+    data_channel: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
+    state: Arc<RwLock<TransportState>>,
+    state_tx: broadcast::Sender<TransportState>,
+    runtime: Arc<dyn Runtime>,
+}
+
+#[async_trait::async_trait]
+impl PeerConnectionEventHandler for TransportHandler {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        let Ok(json) = event.candidate.to_json() else {
+            return;
+        };
+        let Ok(payload) = serde_json::to_string(&json) else {
+            return;
+        };
+
+        let _ = self
+            .event_tx
+            .send(TransportEvent::Negotiation(
+                TransportNegotiationMessage::Candidate { payload },
+            ))
+            .await;
+    }
+
+    async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
+        store_and_poll_dc(
+            dc,
+            Arc::clone(&self.data_channel),
+            self.event_tx.clone(),
+            Arc::clone(&self.state),
+            self.state_tx.clone(),
+            Arc::clone(&self.runtime),
+        )
+        .await;
+    }
+
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        if state == RTCPeerConnectionState::Failed {
+            set_state(&self.state, &self.state_tx, TransportState::Error);
+        }
+    }
 }
 
 pub struct TransportLayer {
@@ -35,12 +70,11 @@ pub struct TransportLayer {
     state: Arc<RwLock<TransportState>>,
     state_tx: broadcast::Sender<TransportState>,
     event_tx: mpsc::Sender<TransportEvent>,
-    peer_connection: Mutex<Option<Arc<RTCPeerConnection>>>,
-    data_channel: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+    peer_connection: Mutex<Option<Arc<dyn PeerConnection>>>,
+    data_channel: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
 }
 
 impl TransportLayer {
-    /// Returns the transport plus the receiver for its events.
     pub fn new(is_host: bool) -> (Self, mpsc::Receiver<TransportEvent>) {
         let (state_tx, _) = broadcast::channel(32);
         let (event_tx, event_rx) = mpsc::channel(64);
@@ -50,7 +84,7 @@ impl TransportLayer {
                 is_host,
                 state: Arc::new(RwLock::new(TransportState::Standby)),
                 state_tx,
-                event_tx,
+                event_tx: event_tx.clone(),
                 peer_connection: Mutex::new(None),
                 data_channel: Arc::new(Mutex::new(None)),
             },
@@ -81,86 +115,55 @@ impl TransportLayer {
             .register_default_codecs()
             .map_err(transport_error)?;
 
-        let registry = register_default_interceptors(Default::default(), &mut media_engine)
+        let registry = Registry::new();
+        let registry = register_default_interceptors(registry, &mut media_engine)
             .map_err(transport_error)?;
 
-        let api = APIBuilder::new()
-            .with_media_engine(media_engine)
-            .with_interceptor_registry(registry)
+        let runtime =
+            default_runtime().ok_or_else(|| OpenLvError::Transport("no async runtime".into()))?;
+
+        let handler = Arc::new(TransportHandler {
+            event_tx: self.event_tx.clone(),
+            data_channel: Arc::clone(&self.data_channel),
+            state: Arc::clone(&self.state),
+            state_tx: self.state_tx.clone(),
+            runtime: Arc::clone(&runtime),
+        });
+
+        let config = RTCConfigurationBuilder::new()
+            .with_ice_servers(default_ice_servers())
             .build();
 
-        let config = RTCConfiguration {
-            ice_servers: default_ice_servers(),
-            ..Default::default()
-        };
-
-        let peer_connection = Arc::new(
-            api.new_peer_connection(config)
-                .await
-                .map_err(transport_error)?,
-        );
-
-        peer_connection.on_ice_candidate(Box::new({
-            let event_tx = self.event_tx.clone();
-            move |candidate| {
-                let event_tx = event_tx.clone();
-                Box::pin(async move {
-                    let Some(candidate) = candidate else { return };
-                    let Ok(json) = candidate.to_json() else {
-                        return;
-                    };
-                    let Ok(payload) = serde_json::to_string(&json) else {
-                        return;
-                    };
-
-                    let _ = event_tx
-                        .send(TransportEvent::Negotiation(
-                            TransportNegotiationMessage::Candidate { payload },
-                        ))
-                        .await;
-                })
-            }
-        }));
-
-        // The client side receives the host-created data channel here.
-        peer_connection.on_data_channel(Box::new({
-            let data_channel = Arc::clone(&self.data_channel);
-            let event_tx = self.event_tx.clone();
-            let state = Arc::clone(&self.state);
-            let state_tx = self.state_tx.clone();
-            move |channel| {
-                let data_channel = Arc::clone(&data_channel);
-                let event_tx = event_tx.clone();
-                let state = Arc::clone(&state);
-                let state_tx = state_tx.clone();
-                Box::pin(async move {
-                    hook_data_channel(channel, data_channel, event_tx, state, state_tx).await;
-                })
-            }
-        }));
+        let pc = PeerConnectionBuilder::new()
+            .with_configuration(config)
+            .with_media_engine(media_engine)
+            .with_interceptor_registry(registry)
+            .with_handler(handler)
+            .with_runtime(runtime.clone())
+            .with_udp_addrs(vec!["0.0.0.0:0"])
+            .build()
+            .await
+            .map_err(transport_error)?;
 
         if self.is_host {
-            let channel = peer_connection
-                .create_data_channel(DATA_CHANNEL_LABEL, Some(RTCDataChannelInit::default()))
+            let dc = pc
+                .create_data_channel(DATA_CHANNEL_LABEL, None)
                 .await
                 .map_err(transport_error)?;
 
-            hook_data_channel(
-                channel,
+            store_and_poll_dc(
+                dc,
                 Arc::clone(&self.data_channel),
                 self.event_tx.clone(),
                 Arc::clone(&self.state),
                 self.state_tx.clone(),
+                runtime,
             )
             .await;
 
-            let offer = peer_connection
-                .create_offer(None)
-                .await
-                .map_err(transport_error)?;
+            let offer = pc.create_offer(None).await.map_err(transport_error)?;
 
-            peer_connection
-                .set_local_description(offer.clone())
+            pc.set_local_description(offer.clone())
                 .await
                 .map_err(transport_error)?;
 
@@ -174,65 +177,58 @@ impl TransportLayer {
                 .await;
         }
 
-        *self.peer_connection.lock().await = Some(peer_connection);
+        let pc: Arc<dyn PeerConnection> = Arc::new(pc);
+        *self.peer_connection.lock().await = Some(pc);
         self.set_state(TransportState::Ready);
         Ok(())
     }
 
     pub async fn teardown(&self) -> Result<(), OpenLvError> {
-        if let Some(channel) = self.data_channel.lock().await.take() {
-            let _ = channel.close().await;
+        if let Some(dc) = self.data_channel.lock().await.take() {
+            let _ = dc.close().await;
         }
 
-        if let Some(peer_connection) = self.peer_connection.lock().await.take() {
-            peer_connection.close().await.map_err(transport_error)?;
+        if let Some(pc) = self.peer_connection.lock().await.take() {
+            pc.close().await.map_err(transport_error)?;
         }
 
         self.set_state(TransportState::Standby);
         Ok(())
     }
 
-    /// Send a pre-encrypted payload over the data channel.
     pub async fn send(&self, payload: &str) -> Result<(), OpenLvError> {
         if self.state() != TransportState::Connected {
             return Err(OpenLvError::Transport("transport not connected".into()));
         }
 
         let channel = self.data_channel.lock().await;
-        let channel = channel
+        let dc = channel
             .as_ref()
             .ok_or_else(|| OpenLvError::Transport("data channel not found".into()))?;
 
-        channel
-            .send_text(payload.to_string())
+        dc.send_text(payload)
             .await
             .map_err(transport_error)?;
 
         Ok(())
     }
 
-    /// Apply a negotiation message received over signaling.
     pub async fn handle(&self, message: TransportNegotiationMessage) -> Result<(), OpenLvError> {
         let peer_connection = self.peer_connection.lock().await;
-        let peer_connection = peer_connection
+        let pc = peer_connection
             .as_ref()
             .ok_or_else(|| OpenLvError::Transport("peer connection not found".into()))?;
 
         match message {
             TransportNegotiationMessage::Offer { payload } => {
                 let offer: RTCSessionDescription = serde_json::from_str(&payload)?;
-                peer_connection
-                    .set_remote_description(offer)
+                pc.set_remote_description(offer)
                     .await
                     .map_err(transport_error)?;
 
-                let answer = peer_connection
-                    .create_answer(None)
-                    .await
-                    .map_err(transport_error)?;
+                let answer = pc.create_answer(None).await.map_err(transport_error)?;
 
-                peer_connection
-                    .set_local_description(answer.clone())
+                pc.set_local_description(answer.clone())
                     .await
                     .map_err(transport_error)?;
 
@@ -247,8 +243,7 @@ impl TransportLayer {
             }
             TransportNegotiationMessage::Answer { payload } => {
                 let answer: RTCSessionDescription = serde_json::from_str(&payload)?;
-                peer_connection
-                    .set_remote_description(answer)
+                pc.set_remote_description(answer)
                     .await
                     .map_err(transport_error)?;
             }
@@ -257,9 +252,9 @@ impl TransportLayer {
                     return Ok(());
                 }
 
-                let candidate: RTCIceCandidateInit = serde_json::from_str(&payload)?;
-                peer_connection
-                    .add_ice_candidate(candidate)
+                let candidate: webrtc::peer_connection::RTCIceCandidateInit =
+                    serde_json::from_str(&payload)?;
+                pc.add_ice_candidate(candidate)
                     .await
                     .map_err(transport_error)?;
             }
@@ -301,28 +296,31 @@ impl TransportLayer {
     }
 }
 
-async fn hook_data_channel(
-    channel: Arc<RTCDataChannel>,
-    store: Arc<Mutex<Option<Arc<RTCDataChannel>>>>,
+async fn store_and_poll_dc(
+    channel: Arc<dyn DataChannel>,
+    store: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
     event_tx: mpsc::Sender<TransportEvent>,
     state: Arc<RwLock<TransportState>>,
     state_tx: broadcast::Sender<TransportState>,
+    runtime: Arc<dyn Runtime>,
 ) {
     *store.lock().await = Some(Arc::clone(&channel));
 
-    channel.on_open(Box::new(move || {
-        Box::pin(async move {
-            set_state(&state, &state_tx, TransportState::Connected);
-        })
-    }));
-
-    channel.on_message(Box::new(move |message| {
-        let event_tx = event_tx.clone();
-        Box::pin(async move {
-            if let Ok(text) = String::from_utf8(message.data.to_vec()) {
-                let _ = event_tx.send(TransportEvent::Message(text)).await;
+    runtime.spawn(Box::pin(async move {
+        while let Some(event) = channel.poll().await {
+            match event {
+                DataChannelEvent::OnOpen => {
+                    set_state(&state, &state_tx, TransportState::Connected);
+                }
+                DataChannelEvent::OnMessage(msg) => {
+                    if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
+                        let _ = event_tx.send(TransportEvent::Message(text)).await;
+                    }
+                }
+                DataChannelEvent::OnClose => break,
+                _ => {}
             }
-        })
+        }
     }));
 }
 
