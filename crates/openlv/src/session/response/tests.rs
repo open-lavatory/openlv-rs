@@ -95,3 +95,51 @@ async fn matching_response_completes_after_unrelated_traffic() {
         json!("result")
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn failed_fails_the_request_at_once_with_or_without_an_ack() {
+    for acked in [false, true] {
+        let (sender, mut receiver) = broadcast::channel(16);
+        if acked {
+            sender
+                .send(SessionMessage::Ack {
+                    message_id: "request".into(),
+                })
+                .unwrap();
+        }
+        sender
+            .send(SessionMessage::Failed {
+                message_id: "request".into(),
+            })
+            .unwrap();
+
+        let started = tokio::time::Instant::now();
+        let result = receive_response(&mut receiver, "request", 10_000, 3_600_000).await;
+
+        assert!(matches!(result, Err(OpenLvError::RequestFailed)));
+        assert_eq!(started.elapsed(), Duration::ZERO, "waited for a timeout");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_for_an_unknown_request_is_ignored() {
+    let (sender, mut receiver) = broadcast::channel(16);
+    sender
+        .send(SessionMessage::Failed {
+            message_id: "another-request".into(),
+        })
+        .unwrap();
+    sender
+        .send(SessionMessage::Response {
+            message_id: "request".into(),
+            payload: json!("result"),
+        })
+        .unwrap();
+
+    assert_eq!(
+        receive_response(&mut receiver, "request", 100, 300)
+            .await
+            .unwrap(),
+        json!("result")
+    );
+}

@@ -38,6 +38,9 @@ pub enum OpenLvError {
     #[error("request timed out: {0}")]
     RequestTimeout(String),
 
+    #[error("remote peer failed to handle the request")]
+    RequestFailed,
+
     #[error("timeout exceeds supported range")]
     InvalidRequestTimeout,
 

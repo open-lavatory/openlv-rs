@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .server("https://ntfy.sh/")
         .on_request(|msg| async move {
             println!("received: {msg}");
-            Ok(json!({"result": "ok"}))
+            Ok(json!({"result": "ok", "id": msg["id"], "jsonrpc": "2.0"}))
         })
         .await?;
 
@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connection URL: {}", dapp.uri());
     dapp.wait_for_link().await?;
 
-    let resp = dapp.send(json!({"method": "eth_chainId", "params": []})).await?;
+    let resp = dapp.send(json!({"method": "eth_chainId", "params": [], "id": 1, "jsonrpc": "2.0"})).await?;
     println!("Response: {resp}");
 
     dapp.close().await?;
@@ -42,7 +42,8 @@ use openlv::prelude::*;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wallet = openlv::wallet("openlv://...")
         .on_request(|msg| async move {
-            Ok(json!({"result": "ok"}))
+            println!("received: {msg}");
+            Ok(json!({"result": "ok", "id": msg["id"], "jsonrpc": "2.0"}))
         })
         .await?;
 

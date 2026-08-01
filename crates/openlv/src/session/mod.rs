@@ -124,6 +124,7 @@ impl SessionConfig {
     }
 
     /// Finalize the session with an automatic incoming-request handler.
+    /// An `Err` is answered with `failed`.
     pub async fn on_request<F, Fut>(self, handler: F) -> Result<Session, OpenLvError>
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
@@ -720,11 +721,12 @@ impl SessionInner {
                 tracing::warn!("failed to ack request: {error}");
             }
 
-            let response = SessionMessage::Response {
-                message_id,
-                payload: (self.on_message)(payload).await?,
-            };
-            self.send_session_message(&response).await
+            let outcome = (self.on_message)(payload).await;
+            if let Err(error) = &outcome {
+                tracing::warn!(error = %error, "request handler failed");
+            }
+            self.send_session_message(&SessionMessage::reply(message_id, outcome))
+                .await
         }
         .await;
         if let Err(error) = result {
