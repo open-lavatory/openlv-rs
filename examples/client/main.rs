@@ -24,65 +24,69 @@ fn test_signer() -> Result<PrivateKeySigner, Box<dyn std::error::Error>> {
 }
 
 fn handle_rpc_request(request: Value, signer: &PrivateKeySigner) -> Value {
-    match request.get("method").and_then(Value::as_str) {
-        Some("eth_accounts") => json!([signer.address().to_string()]),
-        Some("eth_chainId") => json!("0x1"),
-        Some("personal_sign") => personal_sign(request, signer),
-        Some(method) => json!({
-            "error": {
-                "code": -32601,
-                "message": format!("Method {method} not found"),
-            }
-        }),
-        None => json!({
-            "error": {
-                "code": -32600,
-                "message": "Invalid request",
-            }
-        }),
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let response = match request.get("method").and_then(Value::as_str) {
+        Some("eth_accounts") => Ok(json!([signer.address().to_string()])),
+        Some("eth_chainId") => Ok(json!("0x1")),
+        Some("personal_sign") => personal_sign(&request, signer),
+        Some(method) => Err(json!({
+            "code": -32601,
+            "message": format!("Method {method} not found"),
+        })),
+        None => Err(json!({
+            "code": -32600,
+            "message": "Invalid request",
+        })),
+    };
+
+    match response {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err(error) => json!({ "jsonrpc": "2.0", "id": id, "error": error }),
     }
 }
 
-fn personal_sign(request: Value, signer: &PrivateKeySigner) -> Value {
+fn personal_sign(request: &Value, signer: &PrivateKeySigner) -> Result<Value, Value> {
     let Some(params) = request.get("params").and_then(Value::as_array) else {
-        return invalid_params("personal_sign requires message and account parameters");
+        return Err(invalid_params(
+            "personal_sign requires message and account parameters",
+        ));
     };
     let [message, account] = params.as_slice() else {
-        return invalid_params("personal_sign requires exactly two parameters");
+        return Err(invalid_params(
+            "personal_sign requires exactly two parameters",
+        ));
     };
     let (Some(message), Some(account)) = (message.as_str(), account.as_str()) else {
-        return invalid_params("personal_sign parameters must be strings");
+        return Err(invalid_params("personal_sign parameters must be strings"));
     };
     if account != signer.address().to_string() {
-        return json!({
-            "error": {
-                "code": 4100,
-                "message": "Requested account is not available",
-            }
-        });
+        return Err(json!({
+            "code": 4100,
+            "message": "Requested account is not available",
+        }));
     }
 
     let message = match message.strip_prefix("0x").map(hex::decode).transpose() {
         Ok(Some(message)) => message,
-        _ => return invalid_params("personal_sign message must be 0x-prefixed hex"),
+        _ => {
+            return Err(invalid_params(
+                "personal_sign message must be 0x-prefixed hex",
+            ));
+        }
     };
     match signer.sign_message_sync(&message) {
-        Ok(signature) => json!(signature.to_string()),
-        Err(error) => json!({
-            "error": {
-                "code": -32603,
-                "message": error.to_string(),
-            }
-        }),
+        Ok(signature) => Ok(json!(signature.to_string())),
+        Err(error) => Err(json!({
+            "code": -32603,
+            "message": error.to_string(),
+        })),
     }
 }
 
 fn invalid_params(message: &str) -> Value {
     json!({
-        "error": {
-            "code": -32602,
-            "message": message,
-        }
+        "code": -32602,
+        "message": message,
     })
 }
 
@@ -164,12 +168,18 @@ mod tests {
         let address = signer.address().to_string();
         assert_eq!(address, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         assert_eq!(
-            handle_rpc_request(json!({"method": "eth_accounts", "params": []}), &signer),
-            json!([address]),
+            handle_rpc_request(
+                json!({"jsonrpc": "2.0", "id": 1, "method": "eth_accounts", "params": []}),
+                &signer,
+            ),
+            json!({"jsonrpc": "2.0", "id": 1, "result": [address]}),
         );
         assert_eq!(
-            handle_rpc_request(json!({"method": "eth_chainId", "params": []}), &signer),
-            json!("0x1"),
+            handle_rpc_request(
+                json!({"jsonrpc": "2.0", "id": 2, "method": "eth_chainId", "params": []}),
+                &signer,
+            ),
+            json!({"jsonrpc": "2.0", "id": 2, "result": "0x1"}),
         );
     }
 
@@ -178,6 +188,8 @@ mod tests {
         let signer = test_signer().unwrap();
         let response = handle_rpc_request(
             json!({
+                "jsonrpc": "2.0",
+                "id": 3,
                 "method": "personal_sign",
                 "params": [
                     "0x48656c6c6f2c20776f726c6421",
@@ -187,10 +199,10 @@ mod tests {
             &signer,
         );
         assert!(
-            response
+            response["result"]
                 .as_str()
                 .is_some_and(|signature| signature.starts_with("0x"))
         );
-        assert_eq!(response.as_str().unwrap().len(), 132);
+        assert_eq!(response["result"].as_str().unwrap().len(), 132);
     }
 }

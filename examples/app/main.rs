@@ -39,7 +39,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connected!");
 
     let resp = dapp
-        .send(json!({"method": "eth_chainId","params":[]}))
+        .send(json!({
+            "jsonrpc": "2.0",
+            "method": "eth_chainId",
+            "params": [],
+            "id": 1,
+        }))
         .await?;
     println!("Response: {resp}");
 

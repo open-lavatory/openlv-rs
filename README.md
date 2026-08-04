@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .server("https://ntfy.sh/")
         .on_request(|msg| async move {
             println!("received: {msg}");
-            Ok(json!({"result": "ok"}))
+            Ok(json!({"result": "ok", "id": msg.get("id").unwrap_or(&json!(null)), "jsonrpc": "2.0"}))
         })
         .await?;
 
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connection URL: {}", dapp.uri());
 
     dapp.wait_for_link().await?;
-    let resp = dapp.send(json!({"method": "eth_chainId", "params": []})).await?;
+    let resp = dapp.send(json!({"method": "eth_chainId", "params": [], "id": 1, "jsonrpc": "2.0"})).await?;
     println!("Response: {resp}");
 
     dapp.close().await?;
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wallet = openlv::wallet("openlv://...")
         .on_request(|msg| async move {
             println!("received: {msg}");
-            Ok(json!({"result": "ok"}))
+            Ok(json!({"result": "ok", "id": msg.get("id").unwrap_or(&json!(null)), "jsonrpc": "2.0"}))
         })
         .await?;
 
