@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum OpenLvError {
     #[error("invalid session URI: {0}")]
     InvalidUri(String),
@@ -13,6 +13,12 @@ pub enum OpenLvError {
 
     #[error("session error: {0}")]
     Session(String),
+
+    #[error("session is closed")]
+    SessionClosed,
+
+    #[error("incoming request limit reached; request declined")]
+    RequestLimitReached,
 
     #[error("encryption error: {0}")]
     Encryption(String),
@@ -31,6 +37,12 @@ pub enum OpenLvError {
 
     #[error("request timed out: {0}")]
     RequestTimeout(String),
+
+    #[error("timeout exceeds supported range")]
+    InvalidRequestTimeout,
+
+    #[error("response channel closed")]
+    ResponseChannelClosed,
 
     #[error("{0}")]
     Other(String),

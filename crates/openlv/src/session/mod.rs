@@ -1,9 +1,7 @@
-//! Session orchestration: wires the signaling layer to the WebRTC transport
-//! and exposes the request/ack/response messaging API.
-//!
-//! The public [`Session`] is a thin handle; all shared state lives in
-//! `Arc<SessionInner>`, which the background loops spawned by
-//! [`Session::connect`] operate on directly.
+mod control;
+mod response;
+
+use control::{HandlerPermit, SessionControl};
 
 use std::{
     future::Future,
@@ -12,10 +10,7 @@ use std::{
 };
 
 use serde_json::Value;
-use tokio::{
-    sync::{broadcast, mpsc},
-    task::JoinHandle,
-};
+use tokio::sync::{OnceCell, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
@@ -78,10 +73,6 @@ pub struct SessionInitParameters {
     pub info: Option<PeerInfo>,
 }
 
-// ---------------------------------------------------------------------------
-// Builder API
-// ---------------------------------------------------------------------------
-
 /// Configuration builder for creating a session.
 ///
 /// Use [`dapp()`] to start a host (dApp) session or [`wallet(url)`](wallet())
@@ -127,12 +118,12 @@ impl SessionConfig {
         self
     }
 
-    pub(crate) fn connect_url(mut self, url: String) -> Self {
+    fn connect_url(mut self, url: String) -> Self {
         self.connect_url = Some(url);
         self
     }
 
-    /// Finalize the session with an incoming-request handler.
+    /// Finalize the session with an automatic incoming-request handler.
     pub async fn on_request<F, Fut>(self, handler: F) -> Result<Session, OpenLvError>
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
@@ -180,10 +171,6 @@ pub fn wallet(url: &str) -> SessionConfig {
     SessionConfig::default().connect_url(url.to_owned())
 }
 
-// ---------------------------------------------------------------------------
-// Session handle
-// ---------------------------------------------------------------------------
-
 #[derive(Clone)]
 pub struct Session {
     inner: Arc<SessionInner>,
@@ -203,7 +190,8 @@ struct SessionInner {
     error: RwLock<Option<String>>,
     decryption_key: DecryptionKey,
     on_message: RequestHandler,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    control: Arc<SessionControl>,
+    close_result: OnceCell<Result<(), OpenLvError>>,
 }
 
 pub async fn create_session(
@@ -291,7 +279,6 @@ async fn connect_session_with_info(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_session(
     uri: SessionUri,
     is_host: bool,
@@ -319,52 +306,57 @@ fn build_session(
             error: RwLock::new(None),
             decryption_key,
             on_message,
-            tasks: Mutex::new(Vec::new()),
+            control: Arc::new(SessionControl::new()),
+            close_result: OnceCell::new(),
         }),
         transport_events: Arc::new(Mutex::new(Some(transport_events))),
     }
 }
 
 impl Session {
+    /// Start signaling and the session's background event loops.
     pub async fn connect(&self) -> Result<(), OpenLvError> {
-        let transport_events = self
-            .transport_events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-            .ok_or_else(|| OpenLvError::Session("session already connected".into()))?;
-
-        self.inner.set_status(SessionState::Signaling);
-
-        let handles = vec![
-            tokio::spawn(Arc::clone(&self.inner).run_signal_state_loop()),
-            tokio::spawn(Arc::clone(&self.inner).run_signal_message_loop()),
-            tokio::spawn(Arc::clone(&self.inner).run_transport_event_loop(transport_events)),
-        ];
+        let inner = Arc::clone(&self.inner);
+        let transport_events = Arc::clone(&self.transport_events);
         self.inner
-            .tasks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(handles);
+            .control
+            .run_operation(async move {
+                let transport_events = transport_events
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                    .ok_or_else(|| OpenLvError::Session("session already connected".into()))?;
 
-        self.inner.signaling.setup().await
+                inner.set_status(SessionState::Signaling);
+                inner.start_event_loops(transport_events)?;
+
+                inner.signaling.setup().await
+            })
+            .await
     }
 
+    /// Permanently close the session, cancel its work, and release its transports.
+    ///
+    /// Concurrent and repeated calls share the same teardown result.
     pub async fn close(&self) -> Result<(), OpenLvError> {
-        for task in self
-            .inner
-            .tasks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain(..)
-        {
-            task.abort();
-        }
+        self.inner.control.close();
+        self.inner
+            .close_result
+            .get_or_init(|| async {
+                self.inner.control.wait_for_tasks().await;
 
-        self.inner.transport.teardown().await?;
-        self.inner.signaling.teardown().await?;
-        self.inner.set_status(SessionState::Disconnected);
-        Ok(())
+                let transport_result = self.inner.transport.teardown().await;
+                let signaling_result = self.inner.signaling.teardown().await;
+                self.inner.set_status(SessionState::Disconnected);
+                transport_result.and(signaling_result)
+            })
+            .await
+            .clone()
+    }
+
+    /// Wait for permanent closure, including when the session is already closed.
+    pub async fn closed(&self) {
+        self.inner.control.closed().await;
     }
 
     pub fn state(&self) -> SessionStateObject {
@@ -394,63 +386,11 @@ impl Session {
 
     /// Wait until the WebRTC transport reports connected.
     pub async fn wait_for_link(&self) -> Result<(), OpenLvError> {
-        let mut transport_rx = self.inner.transport.subscribe_state();
-
-        match self.inner.status() {
-            SessionState::Connected => return Ok(()),
-            SessionState::Disconnected => {
-                return Err(OpenLvError::Session(
-                    self.inner
-                        .error()
-                        .unwrap_or_else(|| "session failed to connect".into()),
-                ));
-            }
-            _ => {}
-        }
-
-        if self.inner.transport.state() == TransportState::Connected {
-            self.inner.set_status(SessionState::Connected);
-            return Ok(());
-        }
-
-        loop {
-            match transport_rx.recv().await {
-                Ok(TransportState::Connected) => {
-                    self.inner.set_status(SessionState::Connected);
-                    return Ok(());
-                }
-                Ok(TransportState::Error) => {
-                    self.inner.set_error("peer-to-peer transport failed");
-                    self.inner.set_status(SessionState::Disconnected);
-                    return Err(OpenLvError::Session(
-                        self.inner
-                            .error()
-                            .unwrap_or_else(|| "session failed to connect".into()),
-                    ));
-                }
-                Ok(_) => {
-                    if self.inner.transport.state() == TransportState::Connected {
-                        self.inner.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    if self.inner.transport.state() == TransportState::Connected {
-                        self.inner.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
-                    return Err(OpenLvError::Session(
-                        "transport state channel closed".into(),
-                    ));
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    if self.inner.transport.state() == TransportState::Connected {
-                        self.inner.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
-                }
-            }
-        }
+        let inner = Arc::clone(&self.inner);
+        self.inner
+            .control
+            .run_operation(async move { inner.wait_for_link().await })
+            .await
     }
 
     /// Send a request with the JS-default timeouts (10s ack, 1h response).
@@ -465,61 +405,37 @@ impl Session {
         ack_timeout_ms: u64,
         response_timeout_ms: u64,
     ) -> Result<Value, OpenLvError> {
-        if self.inner.signaling.state() != SignalState::Encrypted {
-            return Err(OpenLvError::Session("session not ready".into()));
-        }
-
-        let message_id = Uuid::new_v4().to_string();
-        let session_message = SessionMessage::Request {
-            message_id: message_id.clone(),
-            payload: message,
-        };
-
-        // Subscribe before sending so a fast ack/response cannot be lost.
-        let mut receiver = self.inner.response_tx.subscribe();
-        self.inner.send_session_message(&session_message).await?;
-
-        let ack_deadline =
-            tokio::time::Instant::now() + tokio::time::Duration::from_millis(ack_timeout_ms);
-        let mut ack_received = false;
-
-        loop {
-            let timeout = if ack_received {
-                tokio::time::Duration::from_millis(response_timeout_ms)
-            } else {
-                ack_deadline.saturating_duration_since(tokio::time::Instant::now())
-            };
-
-            match tokio::time::timeout(timeout, receiver.recv()).await {
-                Ok(Ok(SessionMessage::Ack { message_id: id })) if id == message_id => {
-                    ack_received = true;
+        let inner = Arc::clone(&self.inner);
+        self.inner
+            .control
+            .run_operation(async move {
+                if inner.signaling.state() != SignalState::Encrypted {
+                    return Err(OpenLvError::Session("session not ready".into()));
                 }
-                Ok(Ok(SessionMessage::Response {
-                    message_id: id,
-                    payload,
-                })) if id == message_id => {
-                    return Ok(payload);
-                }
-                Ok(Ok(_)) => continue,
-                Ok(Err(_)) => {
-                    return Err(OpenLvError::RequestTimeout(
-                        "response channel closed".into(),
-                    ));
-                }
-                Err(_) if ack_received => {
-                    return Err(OpenLvError::RequestTimeout(
-                        "no response after acknowledgement".into(),
-                    ));
-                }
-                Err(_) => {
-                    return Err(OpenLvError::RequestTimeout(
-                        "remote peer did not acknowledge".into(),
-                    ));
-                }
-            }
-        }
+
+                let message_id = Uuid::new_v4().to_string();
+                let session_message = SessionMessage::Request {
+                    message_id: message_id.clone(),
+                    payload: message,
+                };
+
+                // Subscribe before sending so a fast ack/response cannot be lost.
+                let mut receiver = inner.response_tx.subscribe();
+                inner.send_session_message(&session_message).await?;
+                response::receive_response(
+                    &mut receiver,
+                    &message_id,
+                    ack_timeout_ms,
+                    response_timeout_ms,
+                )
+                .await
+            })
+            .await
     }
 
+    /// Observe accepted request payloads without owning their responses.
+    ///
+    /// This broadcast stream may lag; the configured handler owns each response.
     pub fn subscribe_requests(&self) -> broadcast::Receiver<Value> {
         self.inner.request_tx.subscribe()
     }
@@ -527,18 +443,84 @@ impl Session {
 
 impl Drop for SessionInner {
     fn drop(&mut self) {
-        for task in self
-            .tasks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain(..)
-        {
-            task.abort();
-        }
+        self.control.close();
     }
 }
 
 impl SessionInner {
+    fn start_event_loops(
+        self: &Arc<Self>,
+        transport_events: mpsc::Receiver<TransportEvent>,
+    ) -> Result<(), OpenLvError> {
+        self.control
+            .spawn(Arc::clone(self).run_signal_state_loop())?;
+        self.control
+            .spawn(Arc::clone(self).run_signal_message_loop())?;
+        self.control
+            .spawn(Arc::clone(self).run_transport_state_loop())?;
+        self.control
+            .spawn(Arc::clone(self).run_transport_event_loop(transport_events))?;
+        Ok(())
+    }
+
+    async fn wait_for_link(&self) -> Result<(), OpenLvError> {
+        let mut transport_rx = self.transport.subscribe_state();
+
+        match self.status() {
+            SessionState::Connected => return Ok(()),
+            SessionState::Disconnected => {
+                return Err(OpenLvError::Session(
+                    self.error()
+                        .unwrap_or_else(|| "session failed to connect".into()),
+                ));
+            }
+            _ => {}
+        }
+
+        if self.transport.state() == TransportState::Connected {
+            self.set_status(SessionState::Connected);
+            return Ok(());
+        }
+
+        loop {
+            match transport_rx.recv().await {
+                Ok(TransportState::Connected) => {
+                    self.set_status(SessionState::Connected);
+                    return Ok(());
+                }
+                Ok(TransportState::Error) => {
+                    self.set_error("peer-to-peer transport failed");
+                    self.set_status(SessionState::Disconnected);
+                    return Err(OpenLvError::Session(
+                        self.error()
+                            .unwrap_or_else(|| "session failed to connect".into()),
+                    ));
+                }
+                Ok(_) => {
+                    if self.transport.state() == TransportState::Connected {
+                        self.set_status(SessionState::Connected);
+                        return Ok(());
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    if self.transport.state() == TransportState::Connected {
+                        self.set_status(SessionState::Connected);
+                        return Ok(());
+                    }
+                    return Err(OpenLvError::Session(
+                        "transport state channel closed".into(),
+                    ));
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if self.transport.state() == TransportState::Connected {
+                        self.set_status(SessionState::Connected);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
     fn status(&self) -> SessionState {
         *self
             .status
@@ -581,8 +563,6 @@ impl SessionInner {
         });
     }
 
-    /// Maps signaling states onto session states; sets up the transport once
-    /// the signaling handshake completes.
     async fn run_signal_state_loop(self: Arc<Self>) {
         let mut state_rx = self.signaling.subscribe_state();
 
@@ -600,8 +580,6 @@ impl SessionInner {
                         tracing::error!("transport setup failed: {error}");
                         self.set_error(error.to_string());
                         self.set_status(SessionState::Disconnected);
-                    } else {
-                        tokio::spawn(Arc::clone(&self).run_transport_state_loop());
                     }
                 }
                 SignalState::Error => {
@@ -659,8 +637,6 @@ impl SessionInner {
         }
     }
 
-    /// Consumes transport events: outbound negotiation messages are relayed
-    /// over signaling, inbound data-channel payloads are decrypted and routed.
     async fn run_transport_event_loop(self: Arc<Self>, mut events: mpsc::Receiver<TransportEvent>) {
         while let Some(event) = events.recv().await {
             match event {
@@ -678,7 +654,6 @@ impl SessionInner {
         }
     }
 
-    /// Sends a transport negotiation message wrapped in a session request envelope.
     async fn relay_negotiation(
         &self,
         negotiation: TransportNegotiationMessage,
@@ -698,12 +673,7 @@ impl SessionInner {
             SessionMessage::Request {
                 message_id,
                 payload,
-            } => {
-                let inner = Arc::clone(self);
-                tokio::spawn(async move {
-                    inner.handle_remote_request(message_id, payload).await;
-                });
-            }
+            } => self.dispatch_request(message_id, payload)?,
             other => {
                 let _ = self.response_tx.send(other);
             }
@@ -712,32 +682,56 @@ impl SessionInner {
         Ok(())
     }
 
-    /// Ack the request, invoke the user handler, and send back its response.
-    async fn handle_remote_request(self: Arc<Self>, message_id: String, payload: Value) {
-        let ack = SessionMessage::Ack {
-            message_id: message_id.clone(),
-        };
-        if let Err(error) = self.send_session_message(&ack).await {
-            tracing::warn!("failed to ack request: {error}");
-        }
+    fn dispatch_request(
+        self: &Arc<Self>,
+        message_id: String,
+        payload: Value,
+    ) -> Result<(), OpenLvError> {
+        let permit = self.control.admit_handler()?;
+        self.observe_request(&payload);
+        let inner = Arc::clone(self);
+        self.control.spawn(async move {
+            inner
+                .handle_remote_request(message_id, permit, payload)
+                .await;
+        })?;
+        Ok(())
+    }
 
-        let _ = self.request_tx.send(payload.clone());
-
-        match (self.on_message)(payload).await {
-            Ok(result) => {
-                let response = SessionMessage::Response {
-                    message_id,
-                    payload: result,
-                };
-                if let Err(error) = self.send_session_message(&response).await {
-                    tracing::warn!("failed to send response: {error}");
-                }
-            }
-            Err(error) => tracing::warn!("request handler failed: {error}"),
+    fn observe_request(&self, payload: &Value) {
+        if self.request_tx.receiver_count() != 0 {
+            let _ = self.request_tx.send(payload.clone());
         }
     }
 
-    /// Encrypt a session message for the peer and send it over the transport.
+    /// Keep admission through the ack, response production, and wire response.
+    async fn handle_remote_request(
+        &self,
+        message_id: String,
+        permit: HandlerPermit,
+        payload: Value,
+    ) {
+        let result = async move {
+            let _permit = permit;
+            let ack = SessionMessage::Ack {
+                message_id: message_id.clone(),
+            };
+            if let Err(error) = self.send_session_message(&ack).await {
+                tracing::warn!("failed to ack request: {error}");
+            }
+
+            let response = SessionMessage::Response {
+                message_id,
+                payload: (self.on_message)(payload).await?,
+            };
+            self.send_session_message(&response).await
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(error = %error, "request handling failed");
+        }
+    }
+
     async fn send_session_message(&self, message: &SessionMessage) -> Result<(), OpenLvError> {
         let plaintext = serde_json::to_string(message)?;
         let encrypted = {
@@ -776,27 +770,4 @@ fn select_transport_id<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::select_transport_id;
-
-    #[test]
-    fn selects_the_first_host_preference_supported_by_the_client() {
-        let host = ["ws", "wrtc"];
-        let client = vec!["wrtc".to_string(), "ws".to_string()];
-        assert_eq!(select_transport_id(true, &host, &client), Some("ws"));
-
-        let client_own = ["wrtc", "ws"];
-        let host_peer = vec!["ws".to_string(), "wrtc".to_string()];
-        assert_eq!(
-            select_transport_id(false, &client_own, &host_peer),
-            Some("ws")
-        );
-    }
-
-    #[test]
-    fn rejects_disjoint_transport_lists() {
-        let host = ["wrtc"];
-        let client = vec!["ws".to_string()];
-        assert_eq!(select_transport_id(true, &host, &client), None);
-    }
-}
+mod tests;
