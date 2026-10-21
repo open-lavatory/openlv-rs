@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum OpenLvError {
     #[error("invalid session URI: {0}")]
     InvalidUri(String),
