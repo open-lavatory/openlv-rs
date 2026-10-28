@@ -71,7 +71,8 @@ tokio = { version = "1", features = [
     "time",
     "sync",
 ] }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 
 [[example]]
 name = "client"
@@ -82,6 +83,7 @@ name = "dapp"
 path = "../../examples/app/main.rs"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 qrcode = { version = "0.14.1", default-features = false }
 alloy-primitives = "1"
 alloy-signer = "1"
