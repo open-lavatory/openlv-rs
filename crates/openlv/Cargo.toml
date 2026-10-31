@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "a secure peer-to-peer wallet connectivity protocol"
 license = "GPL-3.0"
-documentation = "https://openlv.rs"
-homepage = "https://openlv.rs"
+documentation = "https://openlv.sh"
+homepage = "https://openlv.sh"
 repository = "https://github.com/open-lavatory/openlv-rs"
 
 [lib]

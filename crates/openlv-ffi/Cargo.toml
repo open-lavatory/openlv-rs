@@ -1,0 +1,21 @@
+[package]
+name = "openlv-ffi"
+version = "0.1.0"
+edition = "2024"
+description = "openlv UniFFI bindings"
+license = "GPL-3.0"
+documentation = "https://openlv.sh"
+homepage = "https://openlv.sh"
+repository = "https://github.com/open-lavatory/openlv-rs"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+openlv = { path = "../openlv", version = "=0.1.0" }
+uniffi = { version = "=0.32.2", features = ["scaffolding-ffi-buffer-fns"] }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
