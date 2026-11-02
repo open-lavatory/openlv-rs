@@ -6,7 +6,7 @@ fn test_compose_and_parse() {
     let parsed = parse_frame(&frame).unwrap();
     assert_eq!(parsed.prefix, WirePrefix::Handshake);
     assert_eq!(parsed.recipient, WireRecipient::Client);
-    assert_eq!(parsed.body, "abc123");
+    assert_eq!(parsed.ciphertext, "abc123");
 }
 
 #[test]

@@ -46,7 +46,7 @@ base64 = "0.22"
 sha2 = "0.10"
 aead = "0.5"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-crypto_secretbox = { version = "0.1", features = ["salsa20"] }
+hkdf = "0.12"
 url = "2"
 
 serde = { version = "1.0", features = ["derive"] }

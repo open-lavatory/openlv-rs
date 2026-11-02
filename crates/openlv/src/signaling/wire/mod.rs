@@ -40,20 +40,25 @@ impl WireRecipient {
 pub struct WireFrame {
     pub prefix: WirePrefix,
     pub recipient: WireRecipient,
-    pub body: String,
+    pub ciphertext: String,
 }
 
 pub fn compose_frame(
     prefix: WirePrefix,
     recipient: WireRecipient,
-    body: impl Into<String>,
+    ciphertext: impl Into<String>,
 ) -> String {
     let prefix_char = match prefix {
         WirePrefix::Handshake => HANDSHAKE_PREFIX,
         WirePrefix::Encrypted => ENCRYPTED_PREFIX,
     };
 
-    format!("{}{}{}", prefix_char, recipient.as_char(), body.into())
+    format!(
+        "{}{}{}",
+        prefix_char,
+        recipient.as_char(),
+        ciphertext.into()
+    )
 }
 
 pub fn parse_frame(payload: &str) -> Result<WireFrame, OpenLvError> {
@@ -78,7 +83,7 @@ pub fn parse_frame(payload: &str) -> Result<WireFrame, OpenLvError> {
     Ok(WireFrame {
         prefix,
         recipient,
-        body: payload[2..].to_string(),
+        ciphertext: payload[2..].to_string(),
     })
 }
 

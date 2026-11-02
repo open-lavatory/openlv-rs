@@ -320,7 +320,7 @@ impl SignalingInner {
         message: SignalingMessage,
     ) -> Result<(), OpenLvError> {
         let plaintext = serde_json::to_string(&message)?;
-        let body = match prefix {
+        let ciphertext = match prefix {
             WirePrefix::Handshake => {
                 let handshake_key =
                     self.properties.handshake_key.as_ref().ok_or_else(|| {
@@ -336,11 +336,13 @@ impl SignalingInner {
                 let relying_key = relying_key.as_ref().ok_or_else(|| {
                     OpenLvError::Signaling("relying party public key not found".into())
                 })?;
-                relying_key.encrypt(&plaintext)?
+                self.properties
+                    .decryption_key
+                    .encrypt(&plaintext, relying_key)?
             }
         };
 
-        let frame = compose_frame(prefix, recipient, body);
+        let frame = compose_frame(prefix, recipient, ciphertext);
         let channel = self.channel.lock().await;
         channel.publish(&frame).await
     }
@@ -358,9 +360,17 @@ impl SignalingInner {
                     self.properties.handshake_key.as_ref().ok_or_else(|| {
                         OpenLvError::Signaling("handshake key is required".into())
                     })?;
-                handshake_key.decrypt(&frame.body)?
+                handshake_key.decrypt(&frame.ciphertext)?
             }
-            WirePrefix::Encrypted => self.properties.decryption_key.decrypt(&frame.body)?,
+            WirePrefix::Encrypted => {
+                let relying_key = self
+                    .relying_key
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                self.properties
+                    .decryption_key
+                    .decrypt(&frame.ciphertext, relying_key.as_ref())?
+            }
         };
 
         let message: SignalingMessage = serde_json::from_str(&plaintext)?;
@@ -419,6 +429,16 @@ impl SignalingInner {
                 true,
             ) => {
                 let received_key = parse_encryption_key(&payload.public_key)?;
+
+                // No peer key is recorded yet, so only the announced key may sign this frame.
+                if EncryptionKey::from_ciphertext(&frame.ciphertext)?.as_bytes()
+                    != received_key.as_bytes()
+                {
+                    tracing::debug!(
+                        "dropping client public key that differs from the frame sender"
+                    );
+                    return Ok(());
+                }
 
                 if !self.store_relying_key(received_key) {
                     return Ok(());

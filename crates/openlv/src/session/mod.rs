@@ -692,7 +692,13 @@ impl SessionInner {
     }
 
     async fn handle_transport_payload(self: &Arc<Self>, raw: String) -> Result<(), OpenLvError> {
-        let plaintext = self.decryption_key.decrypt(&raw)?;
+        let plaintext = {
+            let relying_key = self
+                .relying_key
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.decryption_key.decrypt(&raw, relying_key.as_ref())?
+        };
         self.handle_session_frame(&plaintext)
     }
 
@@ -780,7 +786,7 @@ impl SessionInner {
             let relying_key = relying_key
                 .as_ref()
                 .ok_or_else(|| OpenLvError::Session("relying party public key not found".into()))?;
-            relying_key.encrypt(&plaintext)?
+            self.decryption_key.encrypt(&plaintext, relying_key)?
         };
 
         self.transport.send(&encrypted).await
