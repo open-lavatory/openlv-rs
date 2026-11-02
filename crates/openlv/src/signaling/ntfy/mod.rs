@@ -1,9 +1,17 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{
+        Message,
+        client::IntoClientRequest,
+        http::header::{AUTHORIZATION, HeaderValue},
+    },
+};
 
 use super::channel::{MessageHandler, SignalingChannel};
 use crate::errors::OpenLvError;
@@ -15,7 +23,35 @@ pub struct NtfyConnectionInfo {
     host: String,
     protocol: &'static str,
     ws_protocol: &'static str,
+    credentials: Option<NtfyCredentials>,
     parameters: Option<String>,
+}
+
+/// Credentials from the userinfo part of an ntfy server URL.
+#[derive(Clone, PartialEq, Eq)]
+enum NtfyCredentials {
+    UserPassword { user: String, password: String },
+    Token(String),
+}
+
+impl NtfyCredentials {
+    fn authorization(&self) -> String {
+        match self {
+            Self::UserPassword { user, password } => {
+                format!("Basic {}", STANDARD.encode(format!("{user}:{password}")))
+            }
+            Self::Token(token) => format!("Bearer {token}"),
+        }
+    }
+}
+
+impl fmt::Debug for NtfyCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UserPassword { .. } => formatter.write_str("UserPassword(..)"),
+            Self::Token(_) => formatter.write_str("Token(..)"),
+        }
+    }
 }
 
 pub struct NtfyChannel {
@@ -53,7 +89,18 @@ impl SignalingChannel for NtfyChannel {
             self.connection_info.parameters.as_deref().unwrap_or("")
         );
 
-        let (ws_stream, _) = connect_async(&ws_url)
+        let mut ws_request = ws_url
+            .into_client_request()
+            .map_err(|error| OpenLvError::Signaling(error.to_string()))?;
+        if let Some(credentials) = &self.connection_info.credentials {
+            let authorization = HeaderValue::from_str(&credentials.authorization())
+                .map_err(|error| OpenLvError::Signaling(error.to_string()))?;
+            ws_request
+                .headers_mut()
+                .insert(AUTHORIZATION, authorization);
+        }
+
+        let (ws_stream, _) = connect_async(ws_request)
             .await
             .map_err(|error| OpenLvError::Signaling(error.to_string()))?;
         let (mut write, mut read) = ws_stream.split();
@@ -146,12 +193,17 @@ impl SignalingChannel for NtfyChannel {
             .as_ref()
             .ok_or_else(|| OpenLvError::Signaling("ntfy client not initialized".into()))?;
 
-        client
-            .post(publish_url)
+        let mut request = client.post(publish_url);
+        if let Some(credentials) = &self.connection_info.credentials {
+            request = request.header(AUTHORIZATION, credentials.authorization());
+        }
+
+        request
             .header("Content-Type", "application/json")
             .body(payload.to_owned())
             .send()
             .await
+            .and_then(reqwest::Response::error_for_status)
             .map_err(|error| OpenLvError::Signaling(error.to_string()))?;
 
         Ok(())

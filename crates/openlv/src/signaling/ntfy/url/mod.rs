@@ -2,7 +2,7 @@ use regex::Regex;
 
 use crate::OpenLvError;
 
-use super::NtfyConnectionInfo;
+use super::{NtfyConnectionInfo, NtfyCredentials};
 
 pub fn parse_ntfy_url(url: &str) -> Result<NtfyConnectionInfo, OpenLvError> {
     let regex = Regex::new(
@@ -42,10 +42,23 @@ pub fn parse_ntfy_url(url: &str) -> Result<NtfyConnectionInfo, OpenLvError> {
         }
     });
 
+    let credentials = match (captures.name("user"), captures.name("password")) {
+        (Some(user), Some(password)) => Some(NtfyCredentials::UserPassword {
+            user: user.as_str().to_owned(),
+            password: password.as_str().to_owned(),
+        }),
+        (None, Some(token)) => Some(NtfyCredentials::Token(token.as_str().to_owned())),
+        _ => None,
+    };
+
     Ok(NtfyConnectionInfo {
         host,
         protocol,
         ws_protocol,
+        credentials,
         parameters,
     })
 }
+
+#[cfg(test)]
+mod tests;
