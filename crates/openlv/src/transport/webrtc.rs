@@ -1,6 +1,9 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
     MediaEngine, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
@@ -14,6 +17,8 @@ use crate::errors::OpenLvError;
 
 pub const DATA_CHANNEL_LABEL: &str = "openlv-data";
 
+const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
+
 #[derive(Debug)]
 pub enum TransportEvent {
     Negotiation(TransportNegotiationMessage),
@@ -26,6 +31,7 @@ struct TransportHandler {
     state: Arc<RwLock<TransportState>>,
     state_tx: broadcast::Sender<TransportState>,
     runtime: Arc<dyn Runtime>,
+    unflushed: Arc<watch::Sender<bool>>,
 }
 
 #[async_trait::async_trait]
@@ -55,6 +61,7 @@ impl PeerConnectionEventHandler for TransportHandler {
             Arc::clone(&self.state),
             self.state_tx.clone(),
             Arc::clone(&self.runtime),
+            Arc::clone(&self.unflushed),
         )
         .await;
     }
@@ -77,6 +84,7 @@ pub struct TransportLayer {
     peer_connection: Mutex<Option<Arc<dyn PeerConnection>>>,
     data_channel: Arc<Mutex<Option<Arc<dyn DataChannel>>>>,
     pending_candidates: Arc<Mutex<Vec<webrtc::peer_connection::RTCIceCandidateInit>>>,
+    unflushed: Arc<watch::Sender<bool>>,
 }
 
 impl TransportLayer {
@@ -93,6 +101,7 @@ impl TransportLayer {
                 peer_connection: Mutex::new(None),
                 data_channel: Arc::new(Mutex::new(None)),
                 pending_candidates: Arc::new(Mutex::new(Vec::new())),
+                unflushed: Arc::new(watch::channel(false).0),
             },
             event_rx,
         )
@@ -134,6 +143,7 @@ impl TransportLayer {
             state: Arc::clone(&self.state),
             state_tx: self.state_tx.clone(),
             runtime: Arc::clone(&runtime),
+            unflushed: Arc::clone(&self.unflushed),
         });
 
         let config = RTCConfigurationBuilder::new()
@@ -164,6 +174,7 @@ impl TransportLayer {
                 Arc::clone(&self.state),
                 self.state_tx.clone(),
                 runtime,
+                Arc::clone(&self.unflushed),
             )
             .await;
 
@@ -189,6 +200,13 @@ impl TransportLayer {
     }
 
     pub async fn teardown(&self) -> Result<(), OpenLvError> {
+        let mut flushed = self.unflushed.subscribe();
+        let _ = tokio::time::timeout(
+            CLOSE_FLUSH_TIMEOUT,
+            flushed.wait_for(|unflushed| !*unflushed),
+        )
+        .await;
+
         if let Some(dc) = self.data_channel.lock().await.take() {
             let _ = dc.close().await;
         }
@@ -212,6 +230,7 @@ impl TransportLayer {
             .ok_or_else(|| OpenLvError::Transport("data channel not found".into()))?;
 
         dc.send_text(payload).await.map_err(transport_error)?;
+        self.unflushed.send_replace(true);
 
         Ok(())
     }
@@ -335,6 +354,7 @@ async fn store_and_poll_dc(
     state: Arc<RwLock<TransportState>>,
     state_tx: broadcast::Sender<TransportState>,
     runtime: Arc<dyn Runtime>,
+    unflushed: Arc<watch::Sender<bool>>,
 ) {
     *store.lock().await = Some(Arc::clone(&channel));
 
@@ -349,7 +369,11 @@ async fn store_and_poll_dc(
                         let _ = event_tx.send(TransportEvent::Message(text)).await;
                     }
                 }
+                DataChannelEvent::OnBufferedAmountLow => {
+                    unflushed.send_replace(false);
+                }
                 DataChannelEvent::OnClose => {
+                    unflushed.send_replace(false);
                     set_state(&state, &state_tx, TransportState::Error);
                     break;
                 }

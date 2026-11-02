@@ -14,3 +14,14 @@ fn failed_frame_carries_only_type_and_message_id() {
         json!({"type": "failed", "messageId": "5b0e6f3c"})
     );
 }
+
+#[test]
+fn close_frame_has_no_members_besides_type() {
+    let frame = json!({"type": "close"});
+
+    assert_eq!(serde_json::to_value(SessionMessage::Close).unwrap(), frame);
+    assert_eq!(
+        serde_json::from_value::<SessionMessage>(frame).unwrap(),
+        SessionMessage::Close
+    );
+}

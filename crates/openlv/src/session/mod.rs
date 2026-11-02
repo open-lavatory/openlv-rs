@@ -6,7 +6,10 @@ use control::{HandlerPermit, SessionControl};
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde_json::Value;
@@ -193,6 +196,7 @@ struct SessionInner {
     on_message: RequestHandler,
     control: Arc<SessionControl>,
     close_result: OnceCell<Result<(), OpenLvError>>,
+    peer_closed: AtomicBool,
 }
 
 pub async fn create_session(
@@ -309,6 +313,7 @@ fn build_session(
             on_message,
             control: Arc::new(SessionControl::new()),
             close_result: OnceCell::new(),
+            peer_closed: AtomicBool::new(false),
         }),
         transport_events: Arc::new(Mutex::new(Some(transport_events))),
     }
@@ -344,6 +349,13 @@ impl Session {
         self.inner
             .close_result
             .get_or_init(|| async {
+                if let Err(error) = self
+                    .inner
+                    .send_session_message(&SessionMessage::Close)
+                    .await
+                {
+                    tracing::debug!(error = %error, "close message not sent");
+                }
                 self.inner.control.wait_for_tasks().await;
 
                 let transport_result = self.inner.transport.teardown().await;
@@ -490,7 +502,7 @@ impl SessionInner {
                     return Ok(());
                 }
                 Ok(TransportState::Error) => {
-                    self.set_error("peer-to-peer transport failed");
+                    self.set_transport_error();
                     self.set_status(SessionState::Disconnected);
                     return Err(OpenLvError::Session(
                         self.error()
@@ -541,6 +553,19 @@ impl SessionInner {
             .error
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.into());
+    }
+
+    fn clear_error(&self) {
+        *self
+            .error
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    fn set_transport_error(&self) {
+        if !self.peer_closed.load(Ordering::SeqCst) {
+            self.set_error("peer-to-peer transport failed");
+        }
     }
 
     fn select_transport(&self) -> Option<String> {
@@ -629,7 +654,7 @@ impl SessionInner {
             match state {
                 TransportState::Connected => self.set_status(SessionState::Connected),
                 TransportState::Error => {
-                    self.set_error("peer-to-peer transport failed");
+                    self.set_transport_error();
                     self.set_status(SessionState::Disconnected);
                     return;
                 }
@@ -668,13 +693,24 @@ impl SessionInner {
 
     async fn handle_transport_payload(self: &Arc<Self>, raw: String) -> Result<(), OpenLvError> {
         let plaintext = self.decryption_key.decrypt(&raw)?;
-        let message: SessionMessage = serde_json::from_str(&plaintext)?;
+        self.handle_session_frame(&plaintext)
+    }
+
+    fn handle_session_frame(self: &Arc<Self>, plaintext: &str) -> Result<(), OpenLvError> {
+        let message: SessionMessage = serde_json::from_str(plaintext)?;
 
         match message {
             SessionMessage::Request {
                 message_id,
                 payload,
             } => self.dispatch_request(message_id, payload)?,
+            SessionMessage::Close => {
+                self.peer_closed.store(true, Ordering::SeqCst);
+                self.clear_error();
+                let _ = self.response_tx.send(SessionMessage::Close);
+                self.set_status(SessionState::Disconnected);
+            }
+            SessionMessage::Unknown => tracing::debug!("ignoring session message of unknown type"),
             other => {
                 let _ = self.response_tx.send(other);
             }

@@ -44,6 +44,7 @@ pub async fn receive_response(
             Ok(Ok(SessionMessage::Failed { message_id: id })) if id == message_id => {
                 return Err(OpenLvError::RequestFailed);
             }
+            Ok(Ok(SessionMessage::Close)) => return Err(OpenLvError::SessionClosed),
             Ok(Ok(_)) => continue,
             Ok(Err(_)) => return Err(OpenLvError::ResponseChannelClosed),
             Err(_) => return Err(OpenLvError::RequestTimeout(timeout_reason.into())),

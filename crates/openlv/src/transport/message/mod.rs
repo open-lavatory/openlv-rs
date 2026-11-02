@@ -35,6 +35,10 @@ pub enum SessionMessage {
         #[serde(rename = "messageId")]
         message_id: String,
     },
+    #[serde(rename = "close")]
+    Close,
+    #[serde(other)]
+    Unknown,
 }
 
 impl SessionMessage {

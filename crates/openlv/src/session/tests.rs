@@ -1,4 +1,4 @@
-use super::select_transport_id;
+use super::{response, select_transport_id};
 
 use futures::FutureExt;
 use serde_json::json;
@@ -328,4 +328,36 @@ fn rejects_disjoint_transport_lists() {
     let host = ["wrtc"];
     let client = vec!["ws".to_string()];
     assert_eq!(select_transport_id(true, &host, &client), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn peer_close_ends_the_session_and_fails_open_requests_at_once() {
+    let session = callback_session().await;
+    let mut responses = session.inner.response_tx.subscribe();
+
+    session
+        .inner
+        .handle_session_frame(r#"{"type":"close"}"#)
+        .unwrap();
+
+    let started = tokio::time::Instant::now();
+    let result = response::receive_response(&mut responses, "request", 10_000, 3_600_000).await;
+
+    assert_session_closed(result);
+    assert_eq!(started.elapsed(), Duration::ZERO, "waited for a timeout");
+    assert_eq!(session.state().status, SessionState::Disconnected);
+}
+
+#[tokio::test]
+async fn unknown_message_type_is_ignored() {
+    let session = callback_session().await;
+    let mut responses = session.inner.response_tx.subscribe();
+
+    session
+        .inner
+        .handle_session_frame(r#"{"type":"from-the-future","payload":1}"#)
+        .unwrap();
+
+    assert!(responses.try_recv().is_err());
+    assert_eq!(session.state().status, SessionState::Created);
 }
