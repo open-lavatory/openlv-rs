@@ -17,7 +17,7 @@ use tokio::sync::{OnceCell, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    encryption::{HandshakeKey, KeyPair, PublicKeyHash, init_hash},
+    encryption::{EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash},
     errors::OpenLvError,
     signaling::{
         PeerCapabilities, PeerInfo, SignalState, SignalingLayer, SignalingProperties,
@@ -66,6 +66,42 @@ pub struct SessionStateObject {
     pub error: Option<String>,
 }
 
+/// Key material and negotiated transport needed to resume a completed session.
+pub struct SessionConnectionParameters {
+    pub uri: SessionUri,
+    pub key_pair: KeyPair,
+    pub peer_key: EncryptionKey,
+    pub selected_transport: String,
+}
+
+impl std::fmt::Debug for SessionConnectionParameters {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionConnectionParameters")
+            .field("uri", &self.uri)
+            .field("selected_transport", &self.selected_transport)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SessionConnectionParameters {
+    fn into_init(self) -> SessionInitParameters {
+        let SessionUri::Version1(version1) = self.uri;
+        SessionInitParameters {
+            session_id: Some(version1.session_id),
+            h: Some(version1.key_hash.0),
+            k: Some(version1.shared_key),
+            p: Some(version1.signaling_protocol.to_string()),
+            s: Some(version1.signaling_server),
+            info: None,
+            key_pair: Some(self.key_pair),
+            peer_key: Some(self.peer_key),
+            selected_transport: Some(self.selected_transport),
+        }
+    }
+}
+
+
 #[derive(Default)]
 pub struct SessionInitParameters {
     pub session_id: Option<String>,
@@ -74,6 +110,10 @@ pub struct SessionInitParameters {
     pub p: Option<String>,
     pub s: Option<String>,
     pub info: Option<PeerInfo>,
+    pub key_pair: Option<KeyPair>,
+    pub peer_key: Option<EncryptionKey>,
+    pub selected_transport: Option<String>,
+
 }
 
 /// Configuration builder for creating a session.
@@ -88,6 +128,7 @@ pub struct SessionConfig {
     server: Option<String>,
     handshake_key: Option<HandshakeKey>,
     info: Option<PeerInfo>,
+    resume: Option<SessionConnectionParameters>,
 }
 
 impl SessionConfig {
@@ -121,6 +162,12 @@ impl SessionConfig {
         self
     }
 
+    /// Resume a previously connected session using persisted key material.
+    pub fn resume(mut self, parameters: SessionConnectionParameters) -> Self {
+        self.resume = Some(parameters);
+        self
+    }
+
     fn connect_url(mut self, url: String) -> Self {
         self.connect_url = Some(url);
         self
@@ -137,6 +184,9 @@ impl SessionConfig {
         if let Some(info) = &self.info {
             info.validate()
                 .map_err(|reason| OpenLvError::Session(reason.into()))?;
+        }
+        if let Some(connection) = self.resume {
+            return create_session(connection.into_init(), handler).await;
         }
         match self.connect_url {
             Some(url) => connect_session_with_info(&url, handler, self.info).await,
@@ -183,6 +233,7 @@ pub struct Session {
 
 struct SessionInner {
     uri: SessionUri,
+    key_pair: KeyPair,
     is_host: bool,
     status: RwLock<SessionState>,
     state_tx: broadcast::Sender<SessionStateObject>,
@@ -201,8 +252,18 @@ pub async fn create_session(
     init: SessionInitParameters,
     on_message: RequestHandler,
 ) -> Result<Session, OpenLvError> {
-    let session_id = init.session_id.unwrap_or_else(generate_session_id);
-    let key_pair = KeyPair::generate()?;
+    let session_id = init.session_id.clone().unwrap_or_else(generate_session_id);
+    let key_pair = match init.key_pair {
+        Some(key_pair) => key_pair,
+        None => KeyPair::generate()?,
+    };
+    let peer_key = init.peer_key;
+    let resume = peer_key.is_some();
+    if resume && init.selected_transport.as_deref() != Some("wrtc") {
+        return Err(OpenLvError::Session(
+            "resumption requires the previously selected wrtc transport".into(),
+        ));
+    }
     let handshake_key = match init.k {
         Some(key) => key,
         None => HandshakeKey::generate()?,
@@ -219,19 +280,21 @@ pub async fn create_session(
             session_id: session_id.clone(),
             is_host: init_hash.is_host,
             h: init_hash.hash.clone(),
-            handshake_key: Some(handshake_key.clone()),
+            handshake_key: (!resume).then(|| handshake_key.clone()),
             encryption_key: key_pair.encryption_key.clone(),
             decryption_key: key_pair.decryption_key.clone(),
             capabilities: PeerCapabilities {
                 transports: vec!["wrtc".to_string()],
                 info: init.info,
             },
+            resume,
+            peer_key,
         },
-    );
+    )?;
 
     let uri = SessionUri::new(
         &session_id,
-        PublicKeyHash::from(&key_pair.encryption_key),
+        PublicKeyHash(init_hash.hash),
         handshake_key,
         protocol,
         server,
@@ -239,10 +302,18 @@ pub async fn create_session(
 
     Ok(build_session(
         uri,
-        true,
+        init_hash.is_host,
         signaling,
+        key_pair,
         on_message,
     ))
+}
+
+pub async fn resume_session(
+    parameters: SessionConnectionParameters,
+    on_message: RequestHandler,
+) -> Result<Session, OpenLvError> {
+    create_session(parameters.into_init(), on_message).await
 }
 
 pub async fn connect_session(
@@ -277,6 +348,7 @@ async fn connect_session_with_info(
         uri,
         init_hash.is_host,
         signaling,
+        key_pair,
         on_message,
     ))
 }
@@ -285,6 +357,7 @@ fn build_session(
     uri: SessionUri,
     is_host: bool,
     signaling: SignalingLayer,
+    key_pair: KeyPair,
     on_message: RequestHandler,
 ) -> Session {
     let (state_tx, _) = broadcast::channel(32);
@@ -295,6 +368,7 @@ fn build_session(
     Session {
         inner: Arc::new(SessionInner {
             uri,
+            key_pair,
             is_host,
             status: RwLock::new(SessionState::Created),
             state_tx,
@@ -388,6 +462,37 @@ impl Session {
 
     pub fn uri(&self) -> &SessionUri {
         &self.inner.uri
+    }
+
+    /// Return the persisted key material required to resume this session.
+    pub fn resume_parameters(&self) -> Result<SessionConnectionParameters, OpenLvError> {
+        if self.inner.signaling.state() != SignalState::Encrypted
+            || self.inner.transport.state() != TransportState::Connected
+        {
+            return Err(OpenLvError::Session(
+                "session is not connected and cannot be resumed".into(),
+            ));
+        }
+
+        let peer_key = self
+            .inner
+            .signaling
+            .relying_key_handle()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| OpenLvError::Session("peer key is not available".into()))?;
+        let selected_transport = self
+            .inner
+            .select_transport()
+            .ok_or_else(|| OpenLvError::Session("no selected transport".into()))?;
+
+        Ok(SessionConnectionParameters {
+            uri: self.inner.uri.clone(),
+            key_pair: self.inner.key_pair.clone(),
+            peer_key,
+            selected_transport,
+        })
     }
 
     /// Wait until the WebRTC transport reports connected.

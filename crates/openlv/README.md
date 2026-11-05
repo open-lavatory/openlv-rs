@@ -9,12 +9,12 @@ Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol fo
 | URI encode/decode + validation | Done |
 | Handshake crypto (AES-128-GCM) | Done |
 | Peer crypto (static X25519 + HKDF-SHA256 + directional AES-256-GCM) | Done |
-| Wire frames (`h`/`x` + `h`/`c`) | In progress |
-| Signaling state machine | In progress |
+| Wire frames (`h`/`x` + `h`/`c`) | Done |
+| Signaling state machine | Done |
 | NTFY signaling channel | Done |
 | MQTT signaling channel | Done |
 | WebRTC transport (`openlv-data`) | Done |
-| Session API (`create_session` / `connect_session`) | In progress |
+| Session API (`create_session` / `connect_session` / resume) | In progress |
 
 ## Security model
 
@@ -25,6 +25,8 @@ Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol fo
   keys. Each ciphertext carries the sender public key.
 - X25519 and AEAD provide key possession authentication and integrity; this
   protocol does not use digital signatures or provide non-repudiation.
+- Peer ciphertexts use random nonces but the current version has no replay
+  counter or replay cache.
 - The URL `h` is a 64-bit truncated SHA-256 pin for the host public key. It is
   an identity check, not a frame authenticator.
 
