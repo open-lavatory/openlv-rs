@@ -37,3 +37,9 @@ fn debug_output_hides_credentials() {
 
     assert!(!format!("{info:?}").contains("hunter2"));
 }
+
+#[test]
+fn invalid_url_error_does_not_echo_credentials() {
+    let error = parse_ntfy_url("garbage-hunter2").unwrap_err();
+    assert!(!error.to_string().contains("hunter2"));
+}

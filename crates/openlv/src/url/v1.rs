@@ -69,10 +69,14 @@ impl Version1SessionUri {
             .ok_or_else(|| OpenLvError::InvalidUri("query string missing".into()))?
             .as_str();
 
-        let query_params: std::collections::HashMap<String, String> =
-            form_urlencoded::parse(query_string.as_bytes())
-                .map(|(key, value)| (key.into_owned(), value.into_owned()))
-                .collect();
+        let mut query_params = std::collections::HashMap::new();
+        for (key, value) in form_urlencoded::parse(query_string.as_bytes()) {
+            if query_params.insert(key.into_owned(), value.into_owned()).is_some() {
+                return Err(OpenLvError::InvalidUri(
+                    "duplicate query parameter".into(),
+                ));
+            }
+        }
 
         let h = query_params
             .get("h")
