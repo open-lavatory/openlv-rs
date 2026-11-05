@@ -12,22 +12,22 @@ pub fn parse_ntfy_url(url: &str) -> Result<NtfyConnectionInfo, OpenLvError> {
 
     let captures = regex
         .captures(url)
-        .ok_or_else(|| OpenLvError::Signaling(format!("invalid NTFY URL: {url}")))?;
+        .ok_or_else(|| OpenLvError::Signaling("invalid NTFY URL".into()))?;
 
     let protocol_type = captures
         .name("protocol")
-        .ok_or_else(|| OpenLvError::Signaling(format!("invalid NTFY URL: {url}")))?
+        .ok_or_else(|| OpenLvError::Signaling("invalid NTFY URL".into()))?
         .as_str();
 
     let (protocol, ws_protocol) = match protocol_type {
         "http" | "ntfy" => ("http", "ws"),
         "https" | "ntfys" => ("https", "wss"),
-        _ => return Err(OpenLvError::Signaling(format!("invalid NTFY URL: {url}"))),
+        _ => return Err(OpenLvError::Signaling("invalid NTFY URL".into())),
     };
 
     let host = captures
         .name("host")
-        .ok_or_else(|| OpenLvError::Signaling(format!("invalid NTFY URL: {url}")))?
+        .ok_or_else(|| OpenLvError::Signaling("invalid NTFY URL".into()))?
         .as_str()
         .to_string();
 

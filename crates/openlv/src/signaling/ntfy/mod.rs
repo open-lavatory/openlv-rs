@@ -74,6 +74,21 @@ impl NtfyChannel {
     }
 }
 
+fn is_allowed_attachment(attachment_url: &str, origin: &str) -> bool {
+    let Ok(attachment) = ::url::Url::parse(attachment_url) else {
+        return false;
+    };
+    let Ok(origin) = ::url::Url::parse(origin) else {
+        return false;
+    };
+
+    attachment.scheme() == origin.scheme()
+        && attachment.host_str() == origin.host_str()
+        && attachment.port_or_known_default() == origin.port_or_known_default()
+        && attachment.username().is_empty()
+        && attachment.password().is_none()
+}
+
 #[async_trait]
 impl SignalingChannel for NtfyChannel {
     fn channel_type(&self) -> &'static str {
@@ -110,7 +125,14 @@ impl SignalingChannel for NtfyChannel {
         self.shutdown_tx = Some(shutdown_tx);
 
         let handler = Arc::clone(&self.handler);
-        let http_client = reqwest::Client::new();
+        let http_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| OpenLvError::Signaling(error.to_string()))?;
+        let attachment_origin = format!(
+            "{}://{}",
+            self.connection_info.protocol, self.connection_info.host
+        );
         let attachment_client = http_client.clone();
         let mut ready_tx = Some(ready_tx);
         tokio::spawn(async move {
@@ -134,13 +156,18 @@ impl SignalingChannel for NtfyChannel {
                                                     .and_then(|attachment| attachment.get("url"))
                                                     .and_then(|url| url.as_str())
                                                 {
-                                                    Some(url) => match attachment_client.get(url).send().await {
-                                                        Ok(response) => match response.text().await {
-                                                            Ok(text) => text,
+                                                    Some(url) => {
+                                                        if !is_allowed_attachment(url, &attachment_origin) {
+                                                            continue;
+                                                        }
+                                                        match attachment_client.get(url).send().await {
+                                                            Ok(response) => match response.text().await {
+                                                                Ok(text) => text,
+                                                                Err(_) => continue,
+                                                            },
                                                             Err(_) => continue,
-                                                        },
-                                                        Err(_) => continue,
-                                                    },
+                                                        }
+                                                    }
                                                     None => body.to_owned(),
                                                 };
 
@@ -212,5 +239,25 @@ impl SignalingChannel for NtfyChannel {
     async fn subscribe(&mut self, handler: MessageHandler) -> Result<(), OpenLvError> {
         *self.handler.lock().await = Some(handler);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_attachment;
+
+    #[test]
+    fn attachment_fetch_is_same_origin_and_non_redirecting() {
+        let origin = "https://ntfy.example";
+        assert!(is_allowed_attachment(
+            "https://ntfy.example/file",
+            origin
+        ));
+        assert!(!is_allowed_attachment("http://ntfy.example/file", origin));
+        assert!(!is_allowed_attachment("https://127.0.0.1/file", origin));
+        assert!(!is_allowed_attachment(
+            "https://ntfy.example@127.0.0.1/file",
+            origin
+        ));
     }
 }
