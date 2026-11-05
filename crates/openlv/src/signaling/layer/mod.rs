@@ -1,7 +1,4 @@
-//! Signaling state machine, mirroring `createSignalingLayer` in
-//! `@openlv/signaling`. A thin [`SignalingLayer`] handle wraps an
-//! `Arc<SignalingInner>` so the channel receive callback and public API share
-//! the same state without duplicated plumbing.
+//! Signaling state machine and the two-stage message-authenticated handshake.
 
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
@@ -18,7 +15,8 @@ use super::{
 };
 use crate::{
     encryption::{
-        DecryptionKey, EncryptionKey, HandshakeKey, parse_encryption_key, validate_public_key_hash,
+        AcceptedPeer, DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, PeerCipher,
+        accept_peer, create_peer_cipher, parse_encryption_key, validate_public_key_hash,
     },
     errors::OpenLvError,
 };
@@ -36,6 +34,7 @@ pub enum SignalState {
 
 #[derive(Clone)]
 pub struct SignalingProperties {
+    pub session_id: String,
     pub is_host: bool,
     pub h: String,
     pub handshake_key: Option<HandshakeKey>,
@@ -53,8 +52,10 @@ struct SignalingInner {
     properties: SignalingProperties,
     state: RwLock<SignalState>,
     relying_key: Arc<RwLock<Option<EncryptionKey>>>,
+    peer_cipher: StdMutex<Option<PeerCipher>>,
     peer_capabilities: Arc<RwLock<Option<PeerCapabilities>>>,
     channel: Mutex<Box<dyn SignalingChannel>>,
+    receive_lock: Mutex<()>,
     state_tx: broadcast::Sender<SignalState>,
     message_tx: broadcast::Sender<Value>,
     handshake_task: StdMutex<Option<JoinHandle<()>>>,
@@ -72,14 +73,25 @@ impl SignalingLayer {
                 properties,
                 state: RwLock::new(SignalState::Standby),
                 relying_key: Arc::new(RwLock::new(None)),
+                peer_cipher: StdMutex::new(None),
                 peer_capabilities: Arc::new(RwLock::new(None)),
                 channel: Mutex::new(channel),
+                receive_lock: Mutex::new(()),
                 state_tx,
                 message_tx,
                 handshake_task: StdMutex::new(None),
                 deadline_task: StdMutex::new(None),
             }),
         }
+    }
+
+    /// Return the authenticated cipher negotiated with the peer.
+    pub fn peer_cipher(&self) -> Option<PeerCipher> {
+        self.inner
+            .peer_cipher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn channel_type(&self) -> &str {
@@ -125,7 +137,7 @@ impl SignalingLayer {
                     let receiver = Arc::clone(&receiver);
                     tokio::spawn(async move {
                         if let Err(error) = receiver.handle_receive(&payload).await {
-                            tracing::warn!("signaling receive error: {error}");
+                            tracing::debug!(%error, "dropping signaling frame");
                         }
                     });
                 }))
@@ -137,7 +149,6 @@ impl SignalingLayer {
         } else if inner.properties.is_host {
             inner.set_state(SignalState::Ready);
         } else {
-            inner.set_state(SignalState::Ready);
             inner.set_state(SignalState::Handshake);
             inner.start_handshake_deadline();
             inner
@@ -145,7 +156,7 @@ impl SignalingLayer {
                     WirePrefix::Handshake,
                     WireRecipient::Host,
                     SignalingMessage::Flash {
-                        payload: Value::Object(Default::default()),
+                        payload: serde_json::json!({}),
                         timestamp: current_timestamp(),
                     },
                 )
@@ -204,8 +215,8 @@ impl SignalingInner {
     }
 
     fn can_encrypt(&self) -> bool {
-        self.relying_key
-            .read()
+        self.peer_cipher
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_some()
     }
@@ -215,6 +226,13 @@ impl SignalingInner {
             WireRecipient::Client
         } else {
             WireRecipient::Host
+        }
+    }
+
+    fn key_pair(&self) -> KeyPair {
+        KeyPair {
+            encryption_key: self.properties.encryption_key.clone(),
+            decryption_key: self.properties.decryption_key.clone(),
         }
     }
 
@@ -264,8 +282,7 @@ impl SignalingInner {
         message: SignalingMessage,
     ) -> Result<(), OpenLvError> {
         self.stop_repeating();
-        self.send_message(prefix, recipient, message.clone())
-            .await?;
+        self.send_message(prefix, recipient, message.clone()).await?;
 
         let inner = Arc::clone(self);
         let task = tokio::spawn(async move {
@@ -312,7 +329,6 @@ impl SignalingInner {
         }
     }
 
-    /// Encrypt a signaling message for the given wire prefix and publish it.
     async fn send_message(
         &self,
         prefix: WirePrefix,
@@ -321,25 +337,19 @@ impl SignalingInner {
     ) -> Result<(), OpenLvError> {
         let plaintext = serde_json::to_string(&message)?;
         let ciphertext = match prefix {
-            WirePrefix::Handshake => {
-                let handshake_key =
-                    self.properties.handshake_key.as_ref().ok_or_else(|| {
-                        OpenLvError::Signaling("handshake key is required".into())
-                    })?;
-                handshake_key.encrypt(&plaintext)?
-            }
-            WirePrefix::Encrypted => {
-                let relying_key = self
-                    .relying_key
-                    .read()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let relying_key = relying_key.as_ref().ok_or_else(|| {
-                    OpenLvError::Signaling("relying party public key not found".into())
-                })?;
-                self.properties
-                    .decryption_key
-                    .encrypt(&plaintext, relying_key)?
-            }
+            WirePrefix::Handshake => self
+                .properties
+                .handshake_key
+                .as_ref()
+                .ok_or_else(|| OpenLvError::Signaling("handshake key is required".into()))?
+                .encrypt(&plaintext)?,
+            WirePrefix::Encrypted => self
+                .peer_cipher
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .ok_or_else(|| OpenLvError::Signaling("peer cipher is not ready".into()))?
+                .encrypt(&plaintext)?,
         };
 
         let frame = compose_frame(prefix, recipient, ciphertext);
@@ -348,40 +358,53 @@ impl SignalingInner {
     }
 
     async fn handle_receive(self: &Arc<Self>, payload: &str) -> Result<(), OpenLvError> {
+        let _receive_guard = self.receive_lock.lock().await;
         let frame = parse_frame(payload)?;
 
         if !is_recipient(&frame, self.properties.is_host) {
             return Ok(());
         }
 
+        let mut accepted_peer = None;
         let plaintext = match frame.prefix {
-            WirePrefix::Handshake => {
-                let handshake_key =
-                    self.properties.handshake_key.as_ref().ok_or_else(|| {
-                        OpenLvError::Signaling("handshake key is required".into())
-                    })?;
-                handshake_key.decrypt(&frame.ciphertext)?
-            }
+            WirePrefix::Handshake => self
+                .properties
+                .handshake_key
+                .as_ref()
+                .ok_or_else(|| OpenLvError::Signaling("handshake key is required".into()))?
+                .decrypt(&frame.ciphertext)?,
             WirePrefix::Encrypted => {
-                let relying_key = self
-                    .relying_key
-                    .read()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                self.properties
-                    .decryption_key
-                    .decrypt(&frame.ciphertext, relying_key.as_ref())?
+                if let Some(cipher) = self
+                    .peer_cipher
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .as_ref()
+                    .cloned()
+                {
+                    cipher.decrypt(&frame.ciphertext)?
+                } else if self.properties.is_host && self.state() == SignalState::Handshake {
+                    let accepted = accept_peer(&self.key_pair(), &frame.ciphertext)?;
+                    let message = accepted.message.clone();
+                    accepted_peer = Some(accepted);
+                    message
+                } else {
+                    return Ok(());
+                }
             }
         };
 
         let message: SignalingMessage = serde_json::from_str(&plaintext)?;
         if let Err(reason) = message.validate() {
-            tracing::debug!("dropping invalid signaling message: {reason}");
+            tracing::debug!(%reason, "dropping invalid signaling message");
             return Ok(());
         }
-        let is_host = self.properties.is_host;
 
+        if let Some(accepted) = accepted_peer {
+            return self.handle_accepted_peer(accepted, message).await;
+        }
+
+        let is_host = self.properties.is_host;
         match (frame.prefix, &message, self.state(), is_host) {
-            // Host receives the client's flash and replies with its pubkey.
             (WirePrefix::Handshake, SignalingMessage::Flash { .. }, SignalState::Ready, true) => {
                 self.set_state(SignalState::Handshake);
                 self.start_handshake_deadline();
@@ -392,9 +415,6 @@ impl SignalingInner {
                 )
                 .await?;
             }
-
-            // Client validates the host pubkey against `h` and replies with
-            // its own pubkey under peer encryption.
             (
                 WirePrefix::Handshake,
                 SignalingMessage::Pubkey { payload, .. },
@@ -402,14 +422,14 @@ impl SignalingInner {
                 false,
             ) => {
                 let received_key = parse_encryption_key(&payload.public_key)?;
-
                 if !validate_public_key_hash(&received_key, &self.properties.h)? {
                     tracing::warn!("host public key does not match expected hash");
                     self.set_state(SignalState::Error);
                     return Ok(());
                 }
 
-                if !self.store_relying_key(received_key) {
+                let cipher = create_peer_cipher(&self.key_pair(), &received_key)?;
+                if !self.store_peer(received_key, cipher) {
                     return Ok(());
                 }
                 self.set_state(SignalState::HandshakePartial);
@@ -420,40 +440,6 @@ impl SignalingInner {
                 )
                 .await?;
             }
-
-            // Host records the client pubkey, then advertises its capabilities.
-            (
-                WirePrefix::Encrypted,
-                SignalingMessage::Pubkey { payload, .. },
-                SignalState::Handshake,
-                true,
-            ) => {
-                let received_key = parse_encryption_key(&payload.public_key)?;
-
-                // No peer key is recorded yet, so only the announced key may sign this frame.
-                if EncryptionKey::from_ciphertext(&frame.ciphertext)?.as_bytes()
-                    != received_key.as_bytes()
-                {
-                    tracing::debug!(
-                        "dropping client public key that differs from the frame sender"
-                    );
-                    return Ok(());
-                }
-
-                if !self.store_relying_key(received_key) {
-                    return Ok(());
-                }
-                self.set_state(SignalState::HandshakePartial);
-                self.send_repeating(
-                    WirePrefix::Encrypted,
-                    WireRecipient::Client,
-                    self.capabilities_message(),
-                )
-                .await?;
-            }
-
-            // Both sides enter encrypted mode on capabilities; the client echoes
-            // its own capabilities to complete the host's handshake.
             (
                 WirePrefix::Encrypted,
                 SignalingMessage::Capabilities { payload, .. },
@@ -462,7 +448,6 @@ impl SignalingInner {
             ) => {
                 self.store_peer_capabilities(payload.clone());
                 self.set_state(SignalState::Encrypted);
-
                 if !is_host {
                     self.send_message(
                         WirePrefix::Encrypted,
@@ -472,9 +457,6 @@ impl SignalingInner {
                     .await?;
                 }
             }
-
-            // If the host's capabilities are retried after the client entered
-            // encrypted mode, the client's final packet was lost.
             (
                 WirePrefix::Encrypted,
                 SignalingMessage::Capabilities { .. },
@@ -488,7 +470,6 @@ impl SignalingInner {
                 )
                 .await?;
             }
-
             (
                 WirePrefix::Encrypted,
                 SignalingMessage::Data { payload, .. },
@@ -497,7 +478,6 @@ impl SignalingInner {
             ) => {
                 let _ = self.message_tx.send(payload.clone());
             }
-
             (prefix, message, state, _) => {
                 tracing::debug!(?prefix, ?state, "ignoring signaling message: {message:?}");
             }
@@ -506,7 +486,36 @@ impl SignalingInner {
         Ok(())
     }
 
-    fn store_relying_key(&self, key: EncryptionKey) -> bool {
+    async fn handle_accepted_peer(
+        self: &Arc<Self>,
+        accepted: AcceptedPeer,
+        message: SignalingMessage,
+    ) -> Result<(), OpenLvError> {
+        if !self.properties.is_host || self.state() != SignalState::Handshake {
+            return Ok(());
+        }
+
+        let SignalingMessage::Pubkey { payload, .. } = message else {
+            return Ok(());
+        };
+        if payload.public_key != accepted.peer_key.to_string() {
+            tracing::debug!("ignoring pubkey that differs from the frame key");
+            return Ok(());
+        }
+        if !self.store_peer(accepted.peer_key, accepted.cipher) {
+            return Ok(());
+        }
+
+        self.set_state(SignalState::HandshakePartial);
+        self.send_repeating(
+            WirePrefix::Encrypted,
+            WireRecipient::Client,
+            self.capabilities_message(),
+        )
+        .await
+    }
+
+    fn store_peer(&self, key: EncryptionKey, cipher: PeerCipher) -> bool {
         let mut relying_key = self
             .relying_key
             .write()
@@ -515,6 +524,10 @@ impl SignalingInner {
             return false;
         }
         *relying_key = Some(key);
+        *self
+            .peer_cipher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cipher);
         true
     }
 

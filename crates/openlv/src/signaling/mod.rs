@@ -78,6 +78,7 @@ pub fn signaling_layer_from_version1(
         &version1.signaling_server,
     )?;
     let properties = SignalingProperties {
+        session_id: version1.session_id.clone(),
         is_host,
         h: version1.key_hash.0.clone(),
         handshake_key: Some(version1.shared_key.clone()),

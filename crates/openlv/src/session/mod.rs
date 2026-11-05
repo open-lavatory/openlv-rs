@@ -17,7 +17,7 @@ use tokio::sync::{OnceCell, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    encryption::{DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash},
+    encryption::{HandshakeKey, KeyPair, PublicKeyHash, init_hash},
     errors::OpenLvError,
     signaling::{
         PeerCapabilities, PeerInfo, SignalState, SignalingLayer, SignalingProperties,
@@ -190,9 +190,7 @@ struct SessionInner {
     response_tx: broadcast::Sender<SessionMessage>,
     signaling: SignalingLayer,
     transport: TransportLayer,
-    relying_key: Arc<RwLock<Option<EncryptionKey>>>,
     error: RwLock<Option<String>>,
-    decryption_key: DecryptionKey,
     on_message: RequestHandler,
     control: Arc<SessionControl>,
     close_result: OnceCell<Result<(), OpenLvError>>,
@@ -218,6 +216,7 @@ pub async fn create_session(
     let signaling = SignalingLayer::new(
         channel,
         SignalingProperties {
+            session_id: session_id.clone(),
             is_host: init_hash.is_host,
             h: init_hash.hash.clone(),
             handshake_key: Some(handshake_key.clone()),
@@ -242,7 +241,6 @@ pub async fn create_session(
         uri,
         true,
         signaling,
-        key_pair.decryption_key,
         on_message,
     ))
 }
@@ -279,7 +277,6 @@ async fn connect_session_with_info(
         uri,
         init_hash.is_host,
         signaling,
-        key_pair.decryption_key,
         on_message,
     ))
 }
@@ -288,14 +285,12 @@ fn build_session(
     uri: SessionUri,
     is_host: bool,
     signaling: SignalingLayer,
-    decryption_key: DecryptionKey,
     on_message: RequestHandler,
 ) -> Session {
     let (state_tx, _) = broadcast::channel(32);
     let (request_tx, _) = broadcast::channel(32);
     let (response_tx, _) = broadcast::channel(64);
     let (transport, transport_events) = TransportLayer::new(is_host);
-    let relying_key = signaling.relying_key_handle();
 
     Session {
         inner: Arc::new(SessionInner {
@@ -307,9 +302,7 @@ fn build_session(
             response_tx,
             signaling,
             transport,
-            relying_key,
             error: RwLock::new(None),
-            decryption_key,
             on_message,
             control: Arc::new(SessionControl::new()),
             close_result: OnceCell::new(),
@@ -692,13 +685,11 @@ impl SessionInner {
     }
 
     async fn handle_transport_payload(self: &Arc<Self>, raw: String) -> Result<(), OpenLvError> {
-        let plaintext = {
-            let relying_key = self
-                .relying_key
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.decryption_key.decrypt(&raw, relying_key.as_ref())?
-        };
+        let cipher = self
+            .signaling
+            .peer_cipher()
+            .ok_or_else(|| OpenLvError::Session("peer cipher not ready".into()))?;
+        let plaintext = cipher.decrypt(&raw)?;
         self.handle_session_frame(&plaintext)
     }
 
@@ -778,16 +769,11 @@ impl SessionInner {
 
     async fn send_session_message(&self, message: &SessionMessage) -> Result<(), OpenLvError> {
         let plaintext = serde_json::to_string(message)?;
-        let encrypted = {
-            let relying_key = self
-                .relying_key
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let relying_key = relying_key
-                .as_ref()
-                .ok_or_else(|| OpenLvError::Session("relying party public key not found".into()))?;
-            self.decryption_key.encrypt(&plaintext, relying_key)?
-        };
+        let cipher = self
+            .signaling
+            .peer_cipher()
+            .ok_or_else(|| OpenLvError::Session("peer cipher not ready".into()))?;
+        let encrypted = cipher.encrypt(&plaintext)?;
 
         self.transport.send(&encrypted).await
     }

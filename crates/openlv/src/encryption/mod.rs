@@ -1,10 +1,12 @@
 pub mod asymmetric;
 pub mod handshake;
 pub mod hash;
+pub mod peer;
 
 pub use asymmetric::{DecryptionKey, EncryptionKey, KeyPair, parse_encryption_key};
 pub use handshake::HandshakeKey;
 pub use hash::{InitHash, PublicKeyHash, hash_public_key, init_hash, validate_public_key_hash};
+pub use peer::{AcceptedPeer, PeerCipher, accept_peer, create_peer_cipher};
 
 use crate::errors::OpenLvError;
 

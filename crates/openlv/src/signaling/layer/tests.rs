@@ -52,6 +52,7 @@ fn properties(
     identity: &str,
 ) -> SignalingProperties {
     SignalingProperties {
+        session_id: "session-id".into(),
         is_host,
         h: hash,
         handshake_key: Some(handshake_key),

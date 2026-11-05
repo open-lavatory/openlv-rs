@@ -62,23 +62,18 @@ pub fn compose_frame(
 }
 
 pub fn parse_frame(payload: &str) -> Result<WireFrame, OpenLvError> {
-    if payload.len() < 2 {
+    let bytes = payload.as_bytes();
+    if bytes.len() < 2 {
         return Err(OpenLvError::WireFrame("wire frame is too short".into()));
     }
 
-    let prefix = match &payload[..1] {
-        HANDSHAKE_PREFIX => WirePrefix::Handshake,
-        ENCRYPTED_PREFIX => WirePrefix::Encrypted,
+    let prefix = match bytes[0] {
+        b'h' => WirePrefix::Handshake,
+        b'x' => WirePrefix::Encrypted,
         _ => return Err(OpenLvError::WireFrame("invalid wire frame prefix".into())),
     };
-
-    let recipient = WireRecipient::from_char(
-        payload
-            .chars()
-            .nth(1)
-            .ok_or_else(|| OpenLvError::WireFrame("invalid wire frame recipient".into()))?,
-    )
-    .ok_or_else(|| OpenLvError::WireFrame("invalid wire frame recipient".into()))?;
+    let recipient = WireRecipient::from_char(bytes[1] as char)
+        .ok_or_else(|| OpenLvError::WireFrame("invalid wire frame recipient".into()))?;
 
     Ok(WireFrame {
         prefix,
