@@ -69,6 +69,17 @@ impl SignalingLayer {
         channel: Box<dyn SignalingChannel>,
         properties: SignalingProperties,
     ) -> Result<Self, OpenLvError> {
+        if properties.resume {
+            if properties.peer_key.is_none() || properties.handshake_key.is_some() {
+                return Err(OpenLvError::Signaling(
+                    "resumed signaling requires a pinned peer and no handshake key".into(),
+                ));
+            }
+        } else if properties.peer_key.is_some() || properties.handshake_key.is_none() {
+            return Err(OpenLvError::Signaling(
+                "fresh signaling requires a handshake key and no pinned peer".into(),
+            ));
+        }
         let (state_tx, _) = broadcast::channel(32);
         let (message_tx, _) = broadcast::channel(32);
         let peer_key = properties.peer_key.clone();

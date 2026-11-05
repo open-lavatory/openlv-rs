@@ -17,8 +17,10 @@ use tokio::sync::{OnceCell, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    encryption::{EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash},
     errors::OpenLvError,
+    encryption::{
+        EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash, validate_public_key_hash,
+    },
     signaling::{
         PeerCapabilities, PeerInfo, SignalState, SignalingLayer, SignalingProperties,
         SignalingProtocol, create_signaling_channel, signaling_layer_from_version1,
@@ -263,6 +265,18 @@ pub async fn create_session(
     };
 
     let init_hash = init_hash(init.h.as_deref(), &key_pair.encryption_key)?;
+    if let Some(peer_key) = &peer_key {
+        if peer_key.as_bytes() == key_pair.encryption_key.as_bytes() {
+            return Err(OpenLvError::Session(
+                "resumption requires distinct local and peer keys".into(),
+            ));
+        }
+        if !init_hash.is_host && !validate_public_key_hash(peer_key, &init_hash.hash)? {
+            return Err(OpenLvError::Session(
+                "resumed peer key does not match the session host hash".into(),
+            ));
+        }
+    }
     let protocol = SignalingProtocol::from(
         init.p
             .ok_or_else(|| OpenLvError::Session("signaling protocol is required".into()))?,
