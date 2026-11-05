@@ -41,6 +41,8 @@ pub struct SignalingProperties {
     pub encryption_key: EncryptionKey,
     pub decryption_key: DecryptionKey,
     pub capabilities: PeerCapabilities,
+    pub resume: bool,
+    pub peer_key: Option<EncryptionKey>,
 }
 
 pub struct SignalingLayer {
@@ -63,17 +65,30 @@ struct SignalingInner {
 }
 
 impl SignalingLayer {
-    pub fn new(channel: Box<dyn SignalingChannel>, properties: SignalingProperties) -> Self {
+    pub fn new(
+        channel: Box<dyn SignalingChannel>,
+        properties: SignalingProperties,
+    ) -> Result<Self, OpenLvError> {
         let (state_tx, _) = broadcast::channel(32);
         let (message_tx, _) = broadcast::channel(32);
+        let peer_key = properties.peer_key.clone();
+        let peer_cipher = if let Some(peer_key) = peer_key.as_ref() {
+            let key_pair = KeyPair {
+                encryption_key: properties.encryption_key.clone(),
+                decryption_key: properties.decryption_key.clone(),
+            };
+            Some(create_peer_cipher(&key_pair, peer_key)?)
+        } else {
+            None
+        };
 
-        Self {
+        Ok(Self {
             inner: Arc::new(SignalingInner {
                 channel_type: channel.channel_type().to_string(),
                 properties,
                 state: RwLock::new(SignalState::Standby),
-                relying_key: Arc::new(RwLock::new(None)),
-                peer_cipher: StdMutex::new(None),
+                relying_key: Arc::new(RwLock::new(peer_key)),
+                peer_cipher: StdMutex::new(peer_cipher),
                 peer_capabilities: Arc::new(RwLock::new(None)),
                 channel: Mutex::new(channel),
                 receive_lock: Mutex::new(()),
@@ -82,7 +97,7 @@ impl SignalingLayer {
                 handshake_task: StdMutex::new(None),
                 deadline_task: StdMutex::new(None),
             }),
-        }
+        })
     }
 
     /// Return the authenticated cipher negotiated with the peer.
@@ -144,7 +159,19 @@ impl SignalingLayer {
                 .await?;
         }
 
-        if inner.can_encrypt() {
+        if inner.properties.resume {
+            inner.set_state(SignalState::Ready);
+            inner.start_handshake_deadline();
+            if !inner.properties.is_host {
+                inner
+                    .send_repeating(
+                        WirePrefix::Encrypted,
+                        WireRecipient::Host,
+                        inner.capabilities_message(),
+                    )
+                    .await?;
+            }
+        } else if inner.can_encrypt() {
             inner.set_state(SignalState::Encrypted);
         } else if inner.properties.is_host {
             inner.set_state(SignalState::Ready);
@@ -443,15 +470,16 @@ impl SignalingInner {
             (
                 WirePrefix::Encrypted,
                 SignalingMessage::Capabilities { payload, .. },
-                SignalState::HandshakePartial,
+                state,
                 _,
-            ) => {
+            ) if state == SignalState::HandshakePartial
+                || (self.properties.resume && state == SignalState::Ready) => {
                 self.store_peer_capabilities(payload.clone());
                 self.set_state(SignalState::Encrypted);
-                if !is_host {
+                if !is_host || self.properties.resume {
                     self.send_message(
                         WirePrefix::Encrypted,
-                        WireRecipient::Host,
+                        self.remote_recipient(),
                         self.capabilities_message(),
                     )
                     .await?;

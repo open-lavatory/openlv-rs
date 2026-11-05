@@ -66,6 +66,8 @@ fn properties(
                 icon: None,
             }),
         },
+        resume: false,
+        peer_key: None,
     }
 }
 
@@ -88,7 +90,8 @@ async fn exchanges_capabilities_before_entering_encrypted_state() {
             handshake_key.clone(),
             "com.example.dapp",
         ),
-    );
+    )
+    .unwrap();
     let client = SignalingLayer::new(
         Box::new(MemoryChannel { handlers }),
         properties(
@@ -98,7 +101,8 @@ async fn exchanges_capabilities_before_entering_encrypted_state() {
             handshake_key,
             "com.example.wallet",
         ),
-    );
+    )
+    .unwrap();
 
     host.setup().await.unwrap();
     client.setup().await.unwrap();
@@ -122,4 +126,65 @@ async fn exchanges_capabilities_before_entering_encrypted_state() {
         client.peer_capabilities().unwrap().info.unwrap().identity,
         "com.example.dapp"
     );
+}
+
+#[tokio::test]
+async fn resumes_with_pinned_peer_keys_without_handshake_key() {
+    let handlers = Arc::new(Mutex::new(Vec::new()));
+    let host_key_pair = KeyPair::generate().unwrap();
+    let client_key_pair = KeyPair::generate().unwrap();
+    let hash = init_hash(None, &host_key_pair.encryption_key).unwrap().hash;
+
+    let host = SignalingLayer::new(
+        Box::new(MemoryChannel {
+            handlers: Arc::clone(&handlers),
+        }),
+        SignalingProperties {
+            session_id: "session-id".into(),
+            is_host: true,
+            h: hash.clone(),
+            handshake_key: None,
+            encryption_key: host_key_pair.encryption_key.clone(),
+            decryption_key: host_key_pair.decryption_key.clone(),
+            capabilities: PeerCapabilities {
+                transports: vec!["wrtc".into()],
+                info: None,
+            },
+            resume: true,
+            peer_key: Some(client_key_pair.encryption_key.clone()),
+        },
+    )
+    .unwrap();
+    let client = SignalingLayer::new(
+        Box::new(MemoryChannel { handlers }),
+        SignalingProperties {
+            session_id: "session-id".into(),
+            is_host: false,
+            h: hash,
+            handshake_key: None,
+            encryption_key: client_key_pair.encryption_key.clone(),
+            decryption_key: client_key_pair.decryption_key.clone(),
+            capabilities: PeerCapabilities {
+                transports: vec!["wrtc".into()],
+                info: None,
+            },
+            resume: true,
+            peer_key: Some(host_key_pair.encryption_key.clone()),
+        },
+    )
+    .unwrap();
+
+    host.setup().await.unwrap();
+    client.setup().await.unwrap();
+
+    tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+        loop {
+            if host.state() == SignalState::Encrypted && client.state() == SignalState::Encrypted {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
