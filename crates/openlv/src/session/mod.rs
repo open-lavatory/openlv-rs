@@ -57,6 +57,7 @@ pub enum SessionState {
     Ready,
     Linking,
     Connected,
+    Recovering,
     Disconnected,
 }
 
@@ -585,58 +586,36 @@ impl SessionInner {
     }
 
     async fn wait_for_link(&self) -> Result<(), OpenLvError> {
-        let mut transport_rx = self.transport.subscribe_state();
-
-        match self.status() {
-            SessionState::Connected => return Ok(()),
-            SessionState::Disconnected => {
-                return Err(OpenLvError::Session(
-                    self.error()
-                        .unwrap_or_else(|| "session failed to connect".into()),
-                ));
-            }
-            _ => {}
-        }
-
-        if self.transport.state() == TransportState::Connected {
-            self.set_status(SessionState::Connected);
-            return Ok(());
-        }
-
+        let mut state_rx = self.state_tx.subscribe();
         loop {
-            match transport_rx.recv().await {
-                Ok(TransportState::Connected) => {
-                    self.set_status(SessionState::Connected);
-                    return Ok(());
-                }
-                Ok(TransportState::Error) => {
-                    self.set_transport_error();
-                    self.set_status(SessionState::Disconnected);
+            match self.status() {
+                SessionState::Connected => return Ok(()),
+                SessionState::Disconnected => {
                     return Err(OpenLvError::Session(
                         self.error()
                             .unwrap_or_else(|| "session failed to connect".into()),
                     ));
                 }
-                Ok(_) => {
-                    if self.transport.state() == TransportState::Connected {
-                        self.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    if self.transport.state() == TransportState::Connected {
-                        self.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
+                _ => {}
+            }
+
+            match state_rx.recv().await {
+                Ok(SessionStateObject {
+                    status: SessionState::Connected,
+                    ..
+                }) => return Ok(()),
+                Ok(SessionStateObject {
+                    status: SessionState::Disconnected,
+                    error,
+                    ..
+                }) => {
                     return Err(OpenLvError::Session(
-                        "transport state channel closed".into(),
+                        error.unwrap_or_else(|| "session failed to connect".into()),
                     ));
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    if self.transport.state() == TransportState::Connected {
-                        self.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(OpenLvError::Session("session state channel closed".into()));
                 }
             }
         }
@@ -760,15 +739,37 @@ impl SessionInner {
         let mut state_rx = self.transport.subscribe_state();
         while let Ok(state) = state_rx.recv().await {
             match state {
-                TransportState::Connected => self.set_status(SessionState::Connected),
+                TransportState::Connected => {
+                    self.signaling.mark_transport_connected();
+                    self.clear_error();
+                    self.set_status(SessionState::Connected);
+                }
                 TransportState::Error => {
+                    if self.transport.state() != TransportState::Error {
+                        continue;
+                    }
                     self.set_transport_error();
-                    self.set_status(SessionState::Disconnected);
-                    return;
+                    if self.status() == SessionState::Connected {
+                        self.set_status(SessionState::Recovering);
+                        if let Err(error) = self.recover_transport().await {
+                            self.set_error(error.to_string());
+                            self.set_status(SessionState::Disconnected);
+                            return;
+                        }
+                    } else if self.status() != SessionState::Recovering {
+                        self.set_status(SessionState::Disconnected);
+                        return;
+                    }
                 }
                 _ => {}
             }
         }
+    }
+
+    async fn recover_transport(&self) -> Result<(), OpenLvError> {
+        self.transport.teardown().await?;
+        self.signaling.resume().await?;
+        self.transport.setup().await
     }
 
     async fn run_transport_event_loop(self: Arc<Self>, mut events: mpsc::Receiver<TransportEvent>) {

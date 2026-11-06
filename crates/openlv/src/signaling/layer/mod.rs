@@ -1,10 +1,13 @@
 //! Signaling state machine and the two-stage message-authenticated handshake.
 
-use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::sync::{
+    Arc, Mutex as StdMutex, RwLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use serde_json::Value;
 use tokio::{
-    sync::{Mutex, broadcast},
+    sync::{Mutex, broadcast, oneshot},
     task::JoinHandle,
 };
 
@@ -58,6 +61,8 @@ struct SignalingInner {
     peer_capabilities: Arc<RwLock<Option<PeerCapabilities>>>,
     channel: Mutex<Box<dyn SignalingChannel>>,
     receive_lock: Mutex<()>,
+    resume_waiter: StdMutex<Option<oneshot::Sender<()>>>,
+    transport_active: AtomicBool,
     state_tx: broadcast::Sender<SignalState>,
     message_tx: broadcast::Sender<Value>,
     handshake_task: StdMutex<Option<JoinHandle<()>>>,
@@ -103,6 +108,8 @@ impl SignalingLayer {
                 peer_capabilities: Arc::new(RwLock::new(None)),
                 channel: Mutex::new(channel),
                 receive_lock: Mutex::new(()),
+                resume_waiter: StdMutex::new(None),
+                transport_active: AtomicBool::new(false),
                 state_tx,
                 message_tx,
                 handshake_task: StdMutex::new(None),
@@ -147,6 +154,61 @@ impl SignalingLayer {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Re-authenticate the existing peer and wait for its resumed capabilities.
+    pub async fn resume(&self) -> Result<(), OpenLvError> {
+        if self.state() != SignalState::Encrypted {
+            return Err(OpenLvError::Signaling(
+                "only an encrypted signaling session can resume".into(),
+            ));
+        }
+
+        self.inner.transport_active.store(false, Ordering::SeqCst);
+        let (resume_tx, resume_rx) = oneshot::channel();
+        {
+            let mut waiter = self
+                .inner
+                .resume_waiter
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if waiter.is_some() {
+                return Err(OpenLvError::Signaling(
+                    "signaling resume is already in progress".into(),
+                ));
+            }
+            *waiter = Some(resume_tx);
+        }
+
+        self.inner
+            .send_repeating_retrying(
+                WirePrefix::Encrypted,
+                self.inner.remote_recipient(),
+                self.inner.capabilities_message(),
+            )
+            .await;
+
+        let result =
+            match tokio::time::timeout(tokio::time::Duration::from_secs(45), resume_rx).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(OpenLvError::SessionClosed),
+                Err(_) => Err(OpenLvError::Signaling(
+                    "timed out resuming signaling".into(),
+                )),
+            };
+
+        self.inner.stop_repeating();
+        self.inner
+            .resume_waiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        result
+    }
+
+    /// Mark signaling as active so late negotiation messages can be ignored.
+    pub fn mark_transport_connected(&self) {
+        self.inner.transport_active.store(true, Ordering::SeqCst);
     }
 
     pub async fn setup(&self) -> Result<(), OpenLvError> {
@@ -460,6 +522,13 @@ impl SignalingInner {
             return Ok(());
         }
 
+        if self.transport_active.load(Ordering::SeqCst)
+            && matches!(&message, SignalingMessage::Capabilities { .. })
+        {
+            tracing::debug!("ignoring late capabilities after transport connected");
+            return Ok(());
+        }
+
         if let Some(accepted) = accepted_peer {
             return self.handle_accepted_peer(accepted, message).await;
         }
@@ -515,6 +584,23 @@ impl SignalingInner {
                     )
                     .await?;
                 }
+            }
+            (
+                WirePrefix::Encrypted,
+                SignalingMessage::Capabilities { payload, .. },
+                SignalState::Encrypted,
+                _,
+            ) if self.is_resuming() => {
+                self.store_peer_capabilities(payload.clone());
+                if self.properties.is_host {
+                    self.send_message(
+                        WirePrefix::Encrypted,
+                        self.remote_recipient(),
+                        self.capabilities_message(),
+                    )
+                    .await?;
+                }
+                self.finish_resume();
             }
             (
                 WirePrefix::Encrypted,
@@ -595,8 +681,24 @@ impl SignalingInner {
             .peer_capabilities
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if peer_capabilities.is_none() {
-            *peer_capabilities = Some(capabilities);
+        *peer_capabilities = Some(capabilities);
+    }
+
+    fn is_resuming(&self) -> bool {
+        self.resume_waiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    fn finish_resume(&self) {
+        if let Some(waiter) = self
+            .resume_waiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = waiter.send(());
         }
     }
 }

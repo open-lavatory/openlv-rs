@@ -215,6 +215,7 @@ impl TransportLayer {
             pc.close().await.map_err(transport_error)?;
         }
 
+        self.pending_candidates.lock().await.clear();
         self.set_state(TransportState::Standby);
         Ok(())
     }
