@@ -60,3 +60,13 @@ fn test_invalid_uri_rejected() {
         .is_err()
     );
 }
+
+#[test]
+fn test_duplicate_parameters_are_rejected() {
+    assert!(
+        Version1SessionUri::from_url(
+            "openlv://k7n8m9x2w5q1p3r6@1?h=a1b2c3d4e5f60708&h=a1b2c3d4e5f60708&k=0123456789abcdef0123456789abcdef"
+        )
+        .is_err()
+    );
+}

@@ -15,3 +15,8 @@ fn test_recipient_filter() {
     assert!(!is_recipient(&frame, true));
     assert!(is_recipient(&frame, false));
 }
+
+#[test]
+fn test_rejects_non_ascii_header_without_panicking() {
+    assert!(parse_frame("éx").is_err());
+}
