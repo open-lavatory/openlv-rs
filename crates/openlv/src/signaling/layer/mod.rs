@@ -302,7 +302,8 @@ impl SignalingInner {
 
         let inner = Arc::clone(self);
         let task = tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+            let timeout = if inner.properties.resume { 45 } else { 30 };
+            tokio::time::sleep(tokio::time::Duration::from_secs(timeout)).await;
             if inner.state() != SignalState::Encrypted {
                 inner.set_state(SignalState::Error);
             }
@@ -501,7 +502,7 @@ impl SignalingInner {
                 SignalingMessage::Capabilities { .. },
                 SignalState::Encrypted,
                 false,
-            ) => {
+            ) if !self.properties.resume => {
                 self.send_message(
                     WirePrefix::Encrypted,
                     WireRecipient::Host,
