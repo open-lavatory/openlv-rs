@@ -15,8 +15,8 @@ use super::{
 };
 use crate::{
     encryption::{
-        AcceptedPeer, DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, PeerCipher,
-        accept_peer, create_peer_cipher, parse_encryption_key, validate_public_key_hash,
+        AcceptedPeer, DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, PeerCipher, accept_peer,
+        create_peer_cipher, parse_encryption_key, validate_public_key_hash,
     },
     errors::OpenLvError,
 };
@@ -175,12 +175,12 @@ impl SignalingLayer {
             inner.start_handshake_deadline();
             if !inner.properties.is_host {
                 inner
-                    .send_repeating(
+                    .send_repeating_retrying(
                         WirePrefix::Encrypted,
                         WireRecipient::Host,
                         inner.capabilities_message(),
                     )
-                    .await?;
+                    .await;
             }
         } else if inner.can_encrypt() {
             inner.set_state(SignalState::Encrypted);
@@ -321,8 +321,31 @@ impl SignalingInner {
         message: SignalingMessage,
     ) -> Result<(), OpenLvError> {
         self.stop_repeating();
-        self.send_message(prefix, recipient, message.clone()).await?;
+        self.send_message(prefix, recipient, message.clone())
+            .await?;
+        self.start_repeating(prefix, recipient, message);
+        Ok(())
+    }
 
+    async fn send_repeating_retrying(
+        self: &Arc<Self>,
+        prefix: WirePrefix,
+        recipient: WireRecipient,
+        message: SignalingMessage,
+    ) {
+        self.stop_repeating();
+        if let Err(error) = self.send_message(prefix, recipient, message.clone()).await {
+            tracing::debug!(%error, "initial signaling publish failed; retrying");
+        }
+        self.start_repeating(prefix, recipient, message);
+    }
+
+    fn start_repeating(
+        self: &Arc<Self>,
+        prefix: WirePrefix,
+        recipient: WireRecipient,
+        message: SignalingMessage,
+    ) {
         let inner = Arc::clone(self);
         let task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
@@ -342,7 +365,6 @@ impl SignalingInner {
             .handshake_task
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(task);
-        Ok(())
     }
 
     fn stop_repeating(&self) {
@@ -479,13 +501,10 @@ impl SignalingInner {
                 )
                 .await?;
             }
-            (
-                WirePrefix::Encrypted,
-                SignalingMessage::Capabilities { payload, .. },
-                state,
-                _,
-            ) if state == SignalState::HandshakePartial
-                || (self.properties.resume && state == SignalState::Ready) => {
+            (WirePrefix::Encrypted, SignalingMessage::Capabilities { payload, .. }, state, _)
+                if state == SignalState::HandshakePartial
+                    || (self.properties.resume && state == SignalState::Ready) =>
+            {
                 self.store_peer_capabilities(payload.clone());
                 self.set_state(SignalState::Encrypted);
                 if !is_host || self.properties.resume {

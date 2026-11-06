@@ -4,7 +4,12 @@ use super::*;
 fn test_key_pair_generation() {
     let key_pair = KeyPair::generate().unwrap();
     assert_eq!(key_pair.encryption_key.as_bytes().len(), 32);
-    assert_eq!(from_base64(key_pair.decryption_key.to_string()).unwrap().len(), 32);
+    assert_eq!(
+        from_base64(key_pair.decryption_key.to_string())
+            .unwrap()
+            .len(),
+        32
+    );
 }
 
 #[test]

@@ -17,10 +17,10 @@ use tokio::sync::{OnceCell, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    errors::OpenLvError,
     encryption::{
         EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash, validate_public_key_hash,
     },
+    errors::OpenLvError,
     signaling::{
         PeerCapabilities, PeerInfo, SignalState, SignalingLayer, SignalingProperties,
         SignalingProtocol, create_signaling_channel, signaling_layer_from_version1,
@@ -103,7 +103,6 @@ impl SessionConnectionParameters {
     }
 }
 
-
 #[derive(Default)]
 pub struct SessionInitParameters {
     pub session_id: Option<String>,
@@ -115,7 +114,6 @@ pub struct SessionInitParameters {
     pub key_pair: Option<KeyPair>,
     pub peer_key: Option<EncryptionKey>,
     pub selected_transport: Option<String>,
-
 }
 
 /// Configuration builder for creating a session.

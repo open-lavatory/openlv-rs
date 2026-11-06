@@ -4,7 +4,10 @@
 //! derives a direction-specific AES-256-GCM key from the X25519 shared secret
 //! and rejects frames whose embedded sender key is not the pinned peer key.
 
-use aes_gcm::{Aes256Gcm, Nonce, aead::{Aead, KeyInit}};
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
+};
 use hkdf::Hkdf;
 use rand::RngCore;
 use sha2::Sha256;
@@ -64,7 +67,9 @@ fn derive_key(
     Ok(key)
 }
 
-fn decode_ciphertext(ciphertext: &str) -> Result<([u8; PUBLIC_KEY_BYTES], [u8; NONCE_BYTES], Vec<u8>), OpenLvError> {
+fn decode_ciphertext(
+    ciphertext: &str,
+) -> Result<([u8; PUBLIC_KEY_BYTES], [u8; NONCE_BYTES], Vec<u8>), OpenLvError> {
     let bytes = from_base64(ciphertext)?;
     if bytes.len() < PUBLIC_KEY_BYTES + NONCE_BYTES + TAG_BYTES {
         return Err(OpenLvError::Encryption("ciphertext is malformed".into()));
@@ -76,7 +81,11 @@ fn decode_ciphertext(ciphertext: &str) -> Result<([u8; PUBLIC_KEY_BYTES], [u8; N
     let nonce = bytes[PUBLIC_KEY_BYTES..PUBLIC_KEY_BYTES + NONCE_BYTES]
         .try_into()
         .map_err(|_| OpenLvError::Encryption("ciphertext nonce is malformed".into()))?;
-    Ok((peer_key, nonce, bytes[PUBLIC_KEY_BYTES + NONCE_BYTES..].to_vec()))
+    Ok((
+        peer_key,
+        nonce,
+        bytes[PUBLIC_KEY_BYTES + NONCE_BYTES..].to_vec(),
+    ))
 }
 
 impl PeerCipher {
@@ -98,7 +107,9 @@ impl PeerCipher {
     pub fn decrypt(&self, ciphertext: &str) -> Result<String, OpenLvError> {
         let (sender, nonce, ciphertext) = decode_ciphertext(ciphertext)?;
         if sender != self.peer_public_key {
-            return Err(OpenLvError::Encryption("ciphertext is not from the peer".into()));
+            return Err(OpenLvError::Encryption(
+                "ciphertext is not from the peer".into(),
+            ));
         }
 
         let plaintext = self
@@ -109,8 +120,10 @@ impl PeerCipher {
     }
 }
 
-pub fn create_peer_cipher(key_pair: &KeyPair, peer_key: &EncryptionKey) -> Result<PeerCipher, OpenLvError> {
-
+pub fn create_peer_cipher(
+    key_pair: &KeyPair,
+    peer_key: &EncryptionKey,
+) -> Result<PeerCipher, OpenLvError> {
     let shared_secret = key_pair.decryption_key.shared_secret(peer_key)?;
     let local_public_key: [u8; PUBLIC_KEY_BYTES] = key_pair
         .encryption_key
@@ -172,7 +185,10 @@ mod tests {
         let ciphertext = client_cipher.encrypt("pubkey").unwrap();
 
         let accepted = accept_peer(&host, &ciphertext).unwrap();
-        assert_eq!(accepted.peer_key.as_bytes(), client.encryption_key.as_bytes());
+        assert_eq!(
+            accepted.peer_key.as_bytes(),
+            client.encryption_key.as_bytes()
+        );
         assert_eq!(accepted.message, "pubkey");
     }
 
@@ -189,7 +205,11 @@ mod tests {
 
         let mut tampered = from_base64(&ciphertext).unwrap();
         *tampered.last_mut().unwrap() ^= 1;
-        assert!(host_cipher(&host, &client).decrypt(&to_base64(&tampered)).is_err());
+        assert!(
+            host_cipher(&host, &client)
+                .decrypt(&to_base64(&tampered))
+                .is_err()
+        );
     }
 
     fn host_cipher(host: &KeyPair, client: &KeyPair) -> PeerCipher {
@@ -204,10 +224,12 @@ mod tests {
         )
         .unwrap();
         let peer_key =
-            EncryptionKey::from_base64("pOCSkrZRwni5dyxWn1+puxPZBrRqtoyd+dwrRAn4ogk=")
-                .unwrap();
+            EncryptionKey::from_base64("pOCSkrZRwni5dyxWn1+puxPZBrRqtoyd+dwrRAn4ogk=").unwrap();
         let cipher = create_peer_cipher(&key_pair, &peer_key).unwrap();
         let ciphertext = "pOCSkrZRwni5dyxWn1+puxPZBrRqtoyd+dwrRAn4ogkDAwMDAwMDAwMDAwOL3klAuRZ1a2kM5EryzNjgXIUN6C2hj8Att8QbUqi3iEg5GNHlNL2Q3C//";
-        assert_eq!(cipher.decrypt(ciphertext).unwrap(), "openlv peer-key test vector");
+        assert_eq!(
+            cipher.decrypt(ciphertext).unwrap(),
+            "openlv peer-key test vector"
+        );
     }
 }

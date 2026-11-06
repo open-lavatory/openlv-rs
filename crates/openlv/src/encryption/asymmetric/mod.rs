@@ -16,7 +16,9 @@ pub struct EncryptionKey {
 
 impl fmt::Debug for EncryptionKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("EncryptionKey").finish_non_exhaustive()
+        formatter
+            .debug_struct("EncryptionKey")
+            .finish_non_exhaustive()
     }
 }
 
@@ -36,7 +38,9 @@ impl Clone for DecryptionKey {
 
 impl fmt::Debug for DecryptionKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("DecryptionKey").finish_non_exhaustive()
+        formatter
+            .debug_struct("DecryptionKey")
+            .finish_non_exhaustive()
     }
 }
 
@@ -65,9 +69,11 @@ fn shared_secret(
 impl EncryptionKey {
     pub fn from_base64(serialized: &str) -> Result<Self, OpenLvError> {
         let bytes = from_base64(serialized)?;
-        Self::from_bytes(bytes.try_into().map_err(|_| {
-            OpenLvError::Encryption("public key must be 32 bytes".into())
-        })?)
+        Self::from_bytes(
+            bytes
+                .try_into()
+                .map_err(|_| OpenLvError::Encryption("public key must be 32 bytes".into()))?,
+        )
     }
 
     pub(crate) fn from_bytes(public_key: [u8; PUBLIC_KEY_BYTES]) -> Result<Self, OpenLvError> {
