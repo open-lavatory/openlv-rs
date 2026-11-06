@@ -1,20 +1,9 @@
 # openlv (Rust)
 
-Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol for interoperability with the [typescript implementation](https://github.com/v3xlabs/open-lavatory)
+Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol.
+A wallet-dApp connectivity protocol.
 
-## Parity status
-
-| Layer | Status |
-|-------|--------|
-| URI encode/decode + validation | Done |
-| Handshake crypto (AES-128-GCM) | Done |
-| Peer crypto (X25519 + XSalsa20-Poly1305) | Done |
-| Wire frames (`h`/`x` + `h`/`c`) | Done |
-| Signaling state machine | Done |
-| NTFY signaling channel | Done |
-| MQTT signaling channel | Done |
-| WebRTC transport (`openlv-data`) | Done |
-| Session API (`create_session` / `connect_session`) | Done |
+For sdks in other languages see [github.com/open-lavatory](https://github.com/open-lavatory)
 
 ## Usage
 
