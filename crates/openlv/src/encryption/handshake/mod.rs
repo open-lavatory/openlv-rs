@@ -1,4 +1,7 @@
-use aes_gcm::{Aes128Gcm, Nonce, aead::{Aead, KeyInit}};
+use aes_gcm::{
+    Aes128Gcm, Nonce,
+    aead::{Aead, KeyInit},
+};
 use rand::RngCore;
 
 use super::{from_base64, to_base64};
@@ -16,7 +19,9 @@ pub struct HandshakeKey {
 
 impl std::fmt::Debug for HandshakeKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("HandshakeKey").finish_non_exhaustive()
+        formatter
+            .debug_struct("HandshakeKey")
+            .finish_non_exhaustive()
     }
 }
 
@@ -89,7 +94,9 @@ impl HandshakeKey {
     pub fn decrypt(&self, message: &str) -> Result<String, OpenLvError> {
         let combined = from_base64(message)?;
         if combined.len() < IV_LENGTH + TAG_LENGTH {
-            return Err(OpenLvError::Encryption("encrypted payload is too short".into()));
+            return Err(OpenLvError::Encryption(
+                "encrypted payload is too short".into(),
+            ));
         }
 
         let (iv, ciphertext) = combined.split_at(IV_LENGTH);

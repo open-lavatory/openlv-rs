@@ -249,10 +249,7 @@ mod tests {
     #[test]
     fn attachment_fetch_is_same_origin_and_non_redirecting() {
         let origin = "https://ntfy.example";
-        assert!(is_allowed_attachment(
-            "https://ntfy.example/file",
-            origin
-        ));
+        assert!(is_allowed_attachment("https://ntfy.example/file", origin));
         assert!(!is_allowed_attachment("http://ntfy.example/file", origin));
         assert!(!is_allowed_attachment("https://127.0.0.1/file", origin));
         assert!(!is_allowed_attachment(

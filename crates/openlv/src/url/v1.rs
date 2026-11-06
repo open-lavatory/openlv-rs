@@ -71,10 +71,11 @@ impl Version1SessionUri {
 
         let mut query_params = std::collections::HashMap::new();
         for (key, value) in form_urlencoded::parse(query_string.as_bytes()) {
-            if query_params.insert(key.into_owned(), value.into_owned()).is_some() {
-                return Err(OpenLvError::InvalidUri(
-                    "duplicate query parameter".into(),
-                ));
+            if query_params
+                .insert(key.into_owned(), value.into_owned())
+                .is_some()
+            {
+                return Err(OpenLvError::InvalidUri("duplicate query parameter".into()));
             }
         }
 
