@@ -4,6 +4,7 @@ Native Rust implementation of the [Open Lavatory](https://openlv.sh) protocol.
 A wallet-dApp connectivity protocol.
 
 For sdks in other languages see [github.com/open-lavatory](https://github.com/open-lavatory)
+
 ## Usage
 
 ```rust

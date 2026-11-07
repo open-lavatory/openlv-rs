@@ -1,8 +1,3 @@
-//! Short host-key identity pins used in session URLs.
-//!
-//! The truncated hash identifies the expected host key; AEAD channels, not
-//! this hash, authenticate handshake and application frames.
-
 use sha2::{Digest, Sha256};
 
 use super::asymmetric::EncryptionKey;
