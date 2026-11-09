@@ -97,7 +97,7 @@ impl SessionConfig {
         self
     }
 
-    /// Set the signaling protocol ("ntfy" or "mqtt").
+    /// Set the signaling protocol ("ntfy", "mqtt" or "nostr").
     pub fn protocol(mut self, p: impl Into<SignalingProtocol>) -> Self {
         self.protocol = Some(p.into());
         self

@@ -20,6 +20,15 @@ fn test_decode_connection_url() {
 }
 
 #[test]
+fn test_decode_nostr_url() {
+    let uri = "openlv://k7n8m9x2w5q1p3r6@1?h=a1b2c3d4e5f60708&k=0123456789abcdef0123456789abcdef&p=nostr&s=wss%3A%2F%2Frelay.nostr.net%2F";
+    let SessionUri::Version1(version1) = SessionUri::try_from(uri).unwrap();
+
+    assert_eq!(version1.signaling_protocol, SignalingProtocol::Nostr);
+    assert_eq!(version1.signaling_server, "wss://relay.nostr.net/");
+}
+
+#[test]
 fn test_encode_round_trip() {
     let parameters = Version1SessionUri {
         session_id: "k7n8m9x2w5q1p3r6".to_string(),

@@ -3270,6 +3270,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "hkdf",
+ "k256",
  "mqtt5",
  "qrcode",
  "rand 0.8.6",

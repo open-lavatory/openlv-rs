@@ -2,6 +2,7 @@ pub mod channel;
 pub mod layer;
 pub mod message;
 pub mod mqtt;
+pub mod nostr;
 pub mod ntfy;
 pub mod wire;
 
@@ -17,6 +18,7 @@ use crate::{encryption::KeyPair, errors::OpenLvError, url::v1::Version1SessionUr
 pub enum SignalingProtocol {
     Mqtt,
     Ntfy,
+    Nostr,
     Unsupported(String),
 }
 
@@ -25,6 +27,7 @@ impl From<String> for SignalingProtocol {
         match value.to_lowercase().as_str() {
             "mqtt" => Self::Mqtt,
             "ntfy" => Self::Ntfy,
+            "nostr" => Self::Nostr,
             other => Self::Unsupported(other.to_string()),
         }
     }
@@ -41,6 +44,7 @@ impl Display for SignalingProtocol {
         match self {
             Self::Mqtt => write!(f, "mqtt"),
             Self::Ntfy => write!(f, "ntfy"),
+            Self::Nostr => write!(f, "nostr"),
             Self::Unsupported(value) => write!(f, "{value}"),
         }
     }
@@ -57,6 +61,10 @@ pub fn create_signaling_channel(
             topic.to_string(),
         ))),
         SignalingProtocol::Ntfy => Ok(Box::new(ntfy::NtfyChannel::new(
+            topic.to_string(),
+            server.to_string(),
+        )?)),
+        SignalingProtocol::Nostr => Ok(Box::new(nostr::NostrChannel::new(
             topic.to_string(),
             server.to_string(),
         )?)),
