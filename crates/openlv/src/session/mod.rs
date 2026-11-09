@@ -141,18 +141,11 @@ impl SessionConfig {
         match self.connect_url {
             Some(url) => connect_session_with_info(&url, handler, self.info).await,
             None => {
-                let protocol = self
-                    .protocol
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "ntfy".to_string());
-                let server = self
-                    .server
-                    .unwrap_or_else(|| "https://ntfy.sh/".to_string());
                 create_session(
                     SessionInitParameters {
                         session_id: self.session_id,
-                        p: Some(protocol),
-                        s: Some(server),
+                        p: self.protocol.map(|p| p.to_string()),
+                        s: self.server,
                         k: self.handshake_key,
                         info: self.info,
                         ..Default::default()
@@ -211,8 +204,13 @@ pub async fn create_session(
     };
 
     let init_hash = init_hash(init.h.as_deref(), &key_pair.encryption_key)?;
-    let protocol = SignalingProtocol::from(init.p.unwrap_or_else(|| "ntfy".to_string()));
-    let server = init.s.unwrap_or_else(|| "https://ntfy.sh/".to_string());
+    let protocol = SignalingProtocol::from(
+        init.p
+            .ok_or_else(|| OpenLvError::Session("signaling protocol is required".into()))?,
+    );
+    let server = init
+        .s
+        .ok_or_else(|| OpenLvError::Session("signaling server is required".into()))?;
 
     let channel = create_signaling_channel(&protocol, &session_id, &server)?;
     let signaling = SignalingLayer::new(

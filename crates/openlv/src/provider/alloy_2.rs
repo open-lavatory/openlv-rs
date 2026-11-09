@@ -16,6 +16,8 @@ pub struct Transport {
 /// # let _ = async {
 /// # use openlv::prelude::*;
 /// # let session = openlv::dapp()
+/// #     .protocol(Protocol::Ntfy)
+/// #     .server("https://ntfy.sh/")
 /// #     .on_request(|request| async move {
 /// #         Ok(json!({"jsonrpc": "2.0", "id": request["id"], "result": "success"}))
 /// #     })

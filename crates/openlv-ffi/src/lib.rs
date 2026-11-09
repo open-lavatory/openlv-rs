@@ -260,8 +260,8 @@ impl Session {
     }
 }
 
-/// Create a host (dApp) session from JSON options with the optional keys
-/// `session_id`, `protocol`, `server`, `handshake_key` (hex) and `peer_info`.
+/// Create a host (dApp) session from JSON options with the required keys `protocol` and `server`
+/// and the optional keys `session_id`, `handshake_key` (hex) and `peer_info`.
 #[uniffi::export]
 pub async fn create_dapp(options_json: String) -> Result<Arc<Session>, BridgeError> {
     on_runtime(async move {

@@ -13,8 +13,12 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::{OpenLvError, Session, SessionState, dapp, wallet};
 
+fn ntfy_dapp() -> crate::SessionConfig {
+    dapp().protocol("ntfy").server("https://ntfy.sh/")
+}
+
 async fn callback_session() -> Session {
-    dapp()
+    ntfy_dapp()
         .on_request(|message| async move { Ok(message) })
         .await
         .unwrap()
@@ -68,7 +72,7 @@ async fn close_releases_an_unpolled_connect_that_holds_the_signaling_channel() {
     // Completes TCP connections from its backlog but never answers the
     // websocket upgrade, so signaling setup stays suspended.
     let silent_server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let session = dapp()
+    let session = ntfy_dapp()
         .server(format!("http://{}/", silent_server.local_addr().unwrap()))
         .on_request(|message| async move { Ok(message) })
         .await
@@ -161,7 +165,7 @@ async fn handler_admission_is_bounded_reusable_and_observational() {
     let gate = Arc::new(Semaphore::new(0));
     let (started, mut starts) = mpsc::unbounded_channel();
     let (dropped, mut drops) = mpsc::unbounded_channel();
-    let session = dapp()
+    let session = ntfy_dapp()
         .on_request({
             let gate = Arc::clone(&gate);
             move |_| {
@@ -241,7 +245,7 @@ async fn handler_admission_is_bounded_reusable_and_observational() {
 #[tokio::test]
 async fn close_does_not_invoke_admitted_but_unpolled_callbacks() {
     let invoked = Arc::new(AtomicUsize::new(0));
-    let session = dapp()
+    let session = ntfy_dapp()
         .on_request({
             let invoked = Arc::clone(&invoked);
             move |_| {
@@ -263,7 +267,7 @@ async fn close_does_not_invoke_admitted_but_unpolled_callbacks() {
 async fn shutdown_racing_handler_admission_destroys_every_started_callback() {
     let started = Arc::new(AtomicUsize::new(0));
     let (dropped, mut drops) = mpsc::unbounded_channel();
-    let session = dapp()
+    let session = ntfy_dapp()
         .on_request({
             let started = Arc::clone(&started);
             move |_| {

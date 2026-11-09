@@ -97,9 +97,13 @@ impl Version1SessionUri {
         let p = query_params
             .get("p")
             .map(|value| SignalingProtocol::from(value.clone()))
-            .unwrap_or(SignalingProtocol::Mqtt);
+            .ok_or_else(|| OpenLvError::InvalidUri("p parameter is required".into()))?;
 
-        let signaling_server = query_params.get("s").cloned().unwrap_or_default();
+        let signaling_server = query_params
+            .get("s")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .ok_or_else(|| OpenLvError::InvalidUri("s parameter is required".into()))?;
 
         Ok(Self {
             session_id,
