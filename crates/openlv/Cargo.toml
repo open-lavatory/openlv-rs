@@ -1,6 +1,6 @@
 [package]
 name = "openlv"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "a secure peer-to-peer wallet connectivity protocol"
 license = "LGPL-3.0"
