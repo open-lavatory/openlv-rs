@@ -337,7 +337,6 @@ fn state_json(state: openlv::SessionStateObject) -> String {
         openlv::SessionState::Ready => "ready",
         openlv::SessionState::Linking => "linking",
         openlv::SessionState::Connected => "connected",
-        openlv::SessionState::Recovering => "recovering",
         openlv::SessionState::Disconnected => "disconnected",
     };
     let signaling = state.signaling.map(|signaling| match signaling {

@@ -57,7 +57,6 @@ pub enum SessionState {
     Ready,
     Linking,
     Connected,
-    Recovering,
     Disconnected,
 }
 
@@ -750,13 +749,13 @@ impl SessionInner {
                     }
                     self.set_transport_error();
                     if self.status() == SessionState::Connected {
-                        self.set_status(SessionState::Recovering);
+                        self.set_status(SessionState::Linking);
                         if let Err(error) = self.recover_transport().await {
                             self.set_error(error.to_string());
                             self.set_status(SessionState::Disconnected);
                             return;
                         }
-                    } else if self.status() != SessionState::Recovering {
+                    } else if self.status() != SessionState::Linking {
                         self.set_status(SessionState::Disconnected);
                         return;
                     }
