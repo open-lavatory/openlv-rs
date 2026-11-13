@@ -34,6 +34,7 @@ use crate::{
 /// Default timeouts matching the JS implementation (10s ack, 1h response).
 pub const DEFAULT_ACK_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_RESPONSE_TIMEOUT_MS: u64 = 3_600_000;
+const TRANSPORT_LINK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 pub type RequestHandlerFuture = Pin<Box<dyn Future<Output = Result<Value, OpenLvError>> + Send>>;
 
@@ -641,6 +642,16 @@ impl SessionInner {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.into());
     }
 
+    fn set_error_if_unset(&self, error: impl Into<String>) {
+        let mut current = self
+            .error
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_none() {
+            *current = Some(error.into());
+        }
+    }
+
     fn clear_error(&self) {
         *self
             .error
@@ -690,6 +701,9 @@ impl SessionInner {
                 SignalState::Encrypted => {
                     if self.select_transport().is_none() {
                         self.set_error("no common transport with peer");
+                        self.set_status(SessionState::Disconnected);
+                    } else if let Err(error) = self.start_transport_link_timeout() {
+                        self.set_error(error.to_string());
                         self.set_status(SessionState::Disconnected);
                     } else if let Err(error) = self.transport.setup().await {
                         tracing::error!("transport setup failed: {error}");
@@ -768,10 +782,43 @@ impl SessionInner {
         }
     }
 
-    async fn recover_transport(&self) -> Result<(), OpenLvError> {
+    async fn recover_transport(self: &Arc<Self>) -> Result<(), OpenLvError> {
         self.transport.teardown().await?;
         self.signaling.resume().await?;
+        self.start_transport_link_timeout()?;
         self.transport.setup().await
+    }
+
+    fn start_transport_link_timeout(self: &Arc<Self>) -> Result<(), OpenLvError> {
+        let inner = Arc::clone(self);
+        self.control.spawn(async move {
+            let mut state_rx = inner.state_tx.subscribe();
+            let deadline = tokio::time::sleep(TRANSPORT_LINK_TIMEOUT);
+            tokio::pin!(deadline);
+
+            loop {
+                match inner.status() {
+                    SessionState::Connected | SessionState::Disconnected => return,
+                    _ => {}
+                }
+
+                tokio::select! {
+                    _ = &mut deadline => {
+                        if !matches!(inner.status(), SessionState::Connected | SessionState::Disconnected) {
+                            inner.set_error_if_unset("Timed out establishing the peer-to-peer connection");
+                            inner.set_status(SessionState::Disconnected);
+                        }
+                        return;
+                    }
+                    state = state_rx.recv() => match state {
+                        Ok(SessionStateObject { status: SessionState::Connected | SessionState::Disconnected, .. }) => return,
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+            }
+        })?;
+        Ok(())
     }
 
     async fn run_transport_event_loop(self: Arc<Self>, mut events: mpsc::Receiver<TransportEvent>) {
