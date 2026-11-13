@@ -680,7 +680,10 @@ impl SessionInner {
 
         while let Ok(signal_state) = state_rx.recv().await {
             match signal_state {
-                SignalState::Ready => self.set_status(SessionState::Ready),
+                SignalState::Ready if self.status() != SessionState::Linking => {
+                    self.set_status(SessionState::Ready);
+                }
+                SignalState::Ready => {}
                 SignalState::Handshake | SignalState::HandshakePartial => {
                     self.set_status(SessionState::Linking);
                 }
