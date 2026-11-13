@@ -12,7 +12,11 @@ pub use channel::SignalingChannel;
 pub use layer::{SignalState, SignalingLayer, SignalingProperties};
 pub use message::{PeerCapabilities, PeerInfo, SignalingMessage};
 
-use crate::{encryption::KeyPair, errors::OpenLvError, url::v1::Version1SessionUri};
+use crate::{
+    encryption::{EncryptionKey, KeyPair},
+    errors::OpenLvError,
+    url::v1::Version1SessionUri,
+};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum SignalingProtocol {
@@ -80,19 +84,40 @@ pub fn signaling_layer_from_version1(
     is_host: bool,
     capabilities: PeerCapabilities,
 ) -> Result<SignalingLayer, OpenLvError> {
+    signaling_layer_from_version1_with_resume(
+        version1,
+        key_pair,
+        is_host,
+        capabilities,
+        false,
+        None,
+    )
+}
+
+pub fn signaling_layer_from_version1_with_resume(
+    version1: &Version1SessionUri,
+    key_pair: &KeyPair,
+    is_host: bool,
+    capabilities: PeerCapabilities,
+    resume: bool,
+    peer_key: Option<EncryptionKey>,
+) -> Result<SignalingLayer, OpenLvError> {
     let channel = create_signaling_channel(
         &version1.signaling_protocol,
         &version1.session_id,
         &version1.signaling_server,
     )?;
     let properties = SignalingProperties {
+        session_id: version1.session_id.clone(),
         is_host,
         h: version1.key_hash.0.clone(),
-        handshake_key: Some(version1.shared_key.clone()),
+        handshake_key: (!resume).then(|| version1.shared_key.clone()),
         encryption_key: key_pair.encryption_key.clone(),
         decryption_key: key_pair.decryption_key.clone(),
         capabilities,
+        resume,
+        peer_key,
     };
 
-    Ok(SignalingLayer::new(channel, properties))
+    SignalingLayer::new(channel, properties)
 }

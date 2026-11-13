@@ -17,7 +17,9 @@ use tokio::sync::{OnceCell, broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    encryption::{DecryptionKey, EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash},
+    encryption::{
+        EncryptionKey, HandshakeKey, KeyPair, PublicKeyHash, init_hash, validate_public_key_hash,
+    },
     errors::OpenLvError,
     signaling::{
         PeerCapabilities, PeerInfo, SignalState, SignalingLayer, SignalingProperties,
@@ -32,6 +34,7 @@ use crate::{
 /// Default timeouts matching the JS implementation (10s ack, 1h response).
 pub const DEFAULT_ACK_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_RESPONSE_TIMEOUT_MS: u64 = 3_600_000;
+const TRANSPORT_LINK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 pub type RequestHandlerFuture = Pin<Box<dyn Future<Output = Result<Value, OpenLvError>> + Send>>;
 
@@ -66,6 +69,41 @@ pub struct SessionStateObject {
     pub error: Option<String>,
 }
 
+/// Key material and negotiated transport needed to resume a completed session.
+pub struct SessionConnectionParameters {
+    pub uri: SessionUri,
+    pub key_pair: KeyPair,
+    pub peer_key: EncryptionKey,
+    pub selected_transport: String,
+}
+
+impl std::fmt::Debug for SessionConnectionParameters {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionConnectionParameters")
+            .field("uri", &self.uri)
+            .field("selected_transport", &self.selected_transport)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SessionConnectionParameters {
+    fn into_init(self) -> SessionInitParameters {
+        let SessionUri::Version1(version1) = self.uri;
+        SessionInitParameters {
+            session_id: Some(version1.session_id),
+            h: Some(version1.key_hash.0),
+            k: Some(version1.shared_key),
+            p: Some(version1.signaling_protocol.to_string()),
+            s: Some(version1.signaling_server),
+            info: None,
+            key_pair: Some(self.key_pair),
+            peer_key: Some(self.peer_key),
+            selected_transport: Some(self.selected_transport),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct SessionInitParameters {
     pub session_id: Option<String>,
@@ -74,6 +112,9 @@ pub struct SessionInitParameters {
     pub p: Option<String>,
     pub s: Option<String>,
     pub info: Option<PeerInfo>,
+    pub key_pair: Option<KeyPair>,
+    pub peer_key: Option<EncryptionKey>,
+    pub selected_transport: Option<String>,
 }
 
 /// Configuration builder for creating a session.
@@ -88,6 +129,7 @@ pub struct SessionConfig {
     server: Option<String>,
     handshake_key: Option<HandshakeKey>,
     info: Option<PeerInfo>,
+    resume: Option<SessionConnectionParameters>,
 }
 
 impl SessionConfig {
@@ -121,6 +163,12 @@ impl SessionConfig {
         self
     }
 
+    /// Resume a previously connected session using persisted key material.
+    pub fn resume(mut self, parameters: SessionConnectionParameters) -> Self {
+        self.resume = Some(parameters);
+        self
+    }
+
     fn connect_url(mut self, url: String) -> Self {
         self.connect_url = Some(url);
         self
@@ -137,6 +185,9 @@ impl SessionConfig {
         if let Some(info) = &self.info {
             info.validate()
                 .map_err(|reason| OpenLvError::Session(reason.into()))?;
+        }
+        if let Some(connection) = self.resume {
+            return create_session(connection.into_init(), handler).await;
         }
         match self.connect_url {
             Some(url) => connect_session_with_info(&url, handler, self.info).await,
@@ -176,6 +227,7 @@ pub struct Session {
 
 struct SessionInner {
     uri: SessionUri,
+    key_pair: KeyPair,
     is_host: bool,
     status: RwLock<SessionState>,
     state_tx: broadcast::Sender<SessionStateObject>,
@@ -183,9 +235,7 @@ struct SessionInner {
     response_tx: broadcast::Sender<SessionMessage>,
     signaling: SignalingLayer,
     transport: TransportLayer,
-    relying_key: Arc<RwLock<Option<EncryptionKey>>>,
     error: RwLock<Option<String>>,
-    decryption_key: DecryptionKey,
     on_message: RequestHandler,
     control: Arc<SessionControl>,
     close_result: OnceCell<Result<(), OpenLvError>>,
@@ -196,14 +246,36 @@ pub async fn create_session(
     init: SessionInitParameters,
     on_message: RequestHandler,
 ) -> Result<Session, OpenLvError> {
-    let session_id = init.session_id.unwrap_or_else(generate_session_id);
-    let key_pair = KeyPair::generate()?;
+    let session_id = init.session_id.clone().unwrap_or_else(generate_session_id);
+    let key_pair = match init.key_pair {
+        Some(key_pair) => key_pair,
+        None => KeyPair::generate()?,
+    };
+    let peer_key = init.peer_key;
+    let resume = peer_key.is_some();
+    if resume && init.selected_transport.as_deref() != Some("wrtc") {
+        return Err(OpenLvError::Session(
+            "resumption requires the previously selected wrtc transport".into(),
+        ));
+    }
     let handshake_key = match init.k {
         Some(key) => key,
         None => HandshakeKey::generate()?,
     };
 
     let init_hash = init_hash(init.h.as_deref(), &key_pair.encryption_key)?;
+    if let Some(peer_key) = &peer_key {
+        if peer_key.as_bytes() == key_pair.encryption_key.as_bytes() {
+            return Err(OpenLvError::Session(
+                "resumption requires distinct local and peer keys".into(),
+            ));
+        }
+        if !init_hash.is_host && !validate_public_key_hash(peer_key, &init_hash.hash)? {
+            return Err(OpenLvError::Session(
+                "resumed peer key does not match the session host hash".into(),
+            ));
+        }
+    }
     let protocol = SignalingProtocol::from(
         init.p
             .ok_or_else(|| OpenLvError::Session("signaling protocol is required".into()))?,
@@ -216,21 +288,24 @@ pub async fn create_session(
     let signaling = SignalingLayer::new(
         channel,
         SignalingProperties {
+            session_id: session_id.clone(),
             is_host: init_hash.is_host,
             h: init_hash.hash.clone(),
-            handshake_key: Some(handshake_key.clone()),
+            handshake_key: (!resume).then(|| handshake_key.clone()),
             encryption_key: key_pair.encryption_key.clone(),
             decryption_key: key_pair.decryption_key.clone(),
             capabilities: PeerCapabilities {
                 transports: vec!["wrtc".to_string()],
                 info: init.info,
             },
+            resume,
+            peer_key,
         },
-    );
+    )?;
 
     let uri = SessionUri::new(
         &session_id,
-        PublicKeyHash::from(&key_pair.encryption_key),
+        PublicKeyHash(init_hash.hash),
         handshake_key,
         protocol,
         server,
@@ -238,11 +313,18 @@ pub async fn create_session(
 
     Ok(build_session(
         uri,
-        true,
+        init_hash.is_host,
         signaling,
-        key_pair.decryption_key,
+        key_pair,
         on_message,
     ))
+}
+
+pub async fn resume_session(
+    parameters: SessionConnectionParameters,
+    on_message: RequestHandler,
+) -> Result<Session, OpenLvError> {
+    create_session(parameters.into_init(), on_message).await
 }
 
 pub async fn connect_session(
@@ -277,7 +359,7 @@ async fn connect_session_with_info(
         uri,
         init_hash.is_host,
         signaling,
-        key_pair.decryption_key,
+        key_pair,
         on_message,
     ))
 }
@@ -286,18 +368,18 @@ fn build_session(
     uri: SessionUri,
     is_host: bool,
     signaling: SignalingLayer,
-    decryption_key: DecryptionKey,
+    key_pair: KeyPair,
     on_message: RequestHandler,
 ) -> Session {
     let (state_tx, _) = broadcast::channel(32);
     let (request_tx, _) = broadcast::channel(32);
     let (response_tx, _) = broadcast::channel(64);
     let (transport, transport_events) = TransportLayer::new(is_host);
-    let relying_key = signaling.relying_key_handle();
 
     Session {
         inner: Arc::new(SessionInner {
             uri,
+            key_pair,
             is_host,
             status: RwLock::new(SessionState::Created),
             state_tx,
@@ -305,9 +387,7 @@ fn build_session(
             response_tx,
             signaling,
             transport,
-            relying_key,
             error: RwLock::new(None),
-            decryption_key,
             on_message,
             control: Arc::new(SessionControl::new()),
             close_result: OnceCell::new(),
@@ -395,6 +475,37 @@ impl Session {
         &self.inner.uri
     }
 
+    /// Return the persisted key material required to resume this session.
+    pub fn resume_parameters(&self) -> Result<SessionConnectionParameters, OpenLvError> {
+        if self.inner.signaling.state() != SignalState::Encrypted
+            || self.inner.transport.state() != TransportState::Connected
+        {
+            return Err(OpenLvError::Session(
+                "session is not connected and cannot be resumed".into(),
+            ));
+        }
+
+        let peer_key = self
+            .inner
+            .signaling
+            .relying_key_handle()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| OpenLvError::Session("peer key is not available".into()))?;
+        let selected_transport = self
+            .inner
+            .select_transport()
+            .ok_or_else(|| OpenLvError::Session("no selected transport".into()))?;
+
+        Ok(SessionConnectionParameters {
+            uri: self.inner.uri.clone(),
+            key_pair: self.inner.key_pair.clone(),
+            peer_key,
+            selected_transport,
+        })
+    }
+
     /// Wait until the WebRTC transport reports connected.
     pub async fn wait_for_link(&self) -> Result<(), OpenLvError> {
         let inner = Arc::clone(&self.inner);
@@ -475,58 +586,36 @@ impl SessionInner {
     }
 
     async fn wait_for_link(&self) -> Result<(), OpenLvError> {
-        let mut transport_rx = self.transport.subscribe_state();
-
-        match self.status() {
-            SessionState::Connected => return Ok(()),
-            SessionState::Disconnected => {
-                return Err(OpenLvError::Session(
-                    self.error()
-                        .unwrap_or_else(|| "session failed to connect".into()),
-                ));
-            }
-            _ => {}
-        }
-
-        if self.transport.state() == TransportState::Connected {
-            self.set_status(SessionState::Connected);
-            return Ok(());
-        }
-
+        let mut state_rx = self.state_tx.subscribe();
         loop {
-            match transport_rx.recv().await {
-                Ok(TransportState::Connected) => {
-                    self.set_status(SessionState::Connected);
-                    return Ok(());
-                }
-                Ok(TransportState::Error) => {
-                    self.set_transport_error();
-                    self.set_status(SessionState::Disconnected);
+            match self.status() {
+                SessionState::Connected => return Ok(()),
+                SessionState::Disconnected => {
                     return Err(OpenLvError::Session(
                         self.error()
                             .unwrap_or_else(|| "session failed to connect".into()),
                     ));
                 }
-                Ok(_) => {
-                    if self.transport.state() == TransportState::Connected {
-                        self.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    if self.transport.state() == TransportState::Connected {
-                        self.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
+                _ => {}
+            }
+
+            match state_rx.recv().await {
+                Ok(SessionStateObject {
+                    status: SessionState::Connected,
+                    ..
+                }) => return Ok(()),
+                Ok(SessionStateObject {
+                    status: SessionState::Disconnected,
+                    error,
+                    ..
+                }) => {
                     return Err(OpenLvError::Session(
-                        "transport state channel closed".into(),
+                        error.unwrap_or_else(|| "session failed to connect".into()),
                     ));
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    if self.transport.state() == TransportState::Connected {
-                        self.set_status(SessionState::Connected);
-                        return Ok(());
-                    }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(OpenLvError::Session("session state channel closed".into()));
                 }
             }
         }
@@ -551,6 +640,16 @@ impl SessionInner {
             .error
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.into());
+    }
+
+    fn set_error_if_unset(&self, error: impl Into<String>) {
+        let mut current = self
+            .error
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_none() {
+            *current = Some(error.into());
+        }
     }
 
     fn clear_error(&self) {
@@ -592,13 +691,19 @@ impl SessionInner {
 
         while let Ok(signal_state) = state_rx.recv().await {
             match signal_state {
-                SignalState::Ready => self.set_status(SessionState::Ready),
+                SignalState::Ready if self.status() != SessionState::Linking => {
+                    self.set_status(SessionState::Ready);
+                }
+                SignalState::Ready => {}
                 SignalState::Handshake | SignalState::HandshakePartial => {
                     self.set_status(SessionState::Linking);
                 }
                 SignalState::Encrypted => {
                     if self.select_transport().is_none() {
                         self.set_error("no common transport with peer");
+                        self.set_status(SessionState::Disconnected);
+                    } else if let Err(error) = self.start_transport_link_timeout() {
+                        self.set_error(error.to_string());
                         self.set_status(SessionState::Disconnected);
                     } else if let Err(error) = self.transport.setup().await {
                         tracing::error!("transport setup failed: {error}");
@@ -650,15 +755,70 @@ impl SessionInner {
         let mut state_rx = self.transport.subscribe_state();
         while let Ok(state) = state_rx.recv().await {
             match state {
-                TransportState::Connected => self.set_status(SessionState::Connected),
+                TransportState::Connected => {
+                    self.signaling.mark_transport_connected();
+                    self.clear_error();
+                    self.set_status(SessionState::Connected);
+                }
                 TransportState::Error => {
+                    if self.transport.state() != TransportState::Error {
+                        continue;
+                    }
                     self.set_transport_error();
-                    self.set_status(SessionState::Disconnected);
-                    return;
+                    if self.status() == SessionState::Connected {
+                        self.set_status(SessionState::Linking);
+                        if let Err(error) = self.recover_transport().await {
+                            self.set_error(error.to_string());
+                            self.set_status(SessionState::Disconnected);
+                            return;
+                        }
+                    } else if self.status() != SessionState::Linking {
+                        self.set_status(SessionState::Disconnected);
+                        return;
+                    }
                 }
                 _ => {}
             }
         }
+    }
+
+    async fn recover_transport(self: &Arc<Self>) -> Result<(), OpenLvError> {
+        self.transport.teardown().await?;
+        self.signaling.resume().await?;
+        self.start_transport_link_timeout()?;
+        self.transport.setup().await
+    }
+
+    fn start_transport_link_timeout(self: &Arc<Self>) -> Result<(), OpenLvError> {
+        let inner = Arc::clone(self);
+        self.control.spawn(async move {
+            let mut state_rx = inner.state_tx.subscribe();
+            let deadline = tokio::time::sleep(TRANSPORT_LINK_TIMEOUT);
+            tokio::pin!(deadline);
+
+            loop {
+                match inner.status() {
+                    SessionState::Connected | SessionState::Disconnected => return,
+                    _ => {}
+                }
+
+                tokio::select! {
+                    _ = &mut deadline => {
+                        if !matches!(inner.status(), SessionState::Connected | SessionState::Disconnected) {
+                            inner.set_error_if_unset("Timed out establishing the peer-to-peer connection");
+                            inner.set_status(SessionState::Disconnected);
+                        }
+                        return;
+                    }
+                    state = state_rx.recv() => match state {
+                        Ok(SessionStateObject { status: SessionState::Connected | SessionState::Disconnected, .. }) => return,
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+            }
+        })?;
+        Ok(())
     }
 
     async fn run_transport_event_loop(self: Arc<Self>, mut events: mpsc::Receiver<TransportEvent>) {
@@ -690,13 +850,11 @@ impl SessionInner {
     }
 
     async fn handle_transport_payload(self: &Arc<Self>, raw: String) -> Result<(), OpenLvError> {
-        let plaintext = {
-            let relying_key = self
-                .relying_key
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.decryption_key.decrypt(&raw, relying_key.as_ref())?
-        };
+        let cipher = self
+            .signaling
+            .peer_cipher()
+            .ok_or_else(|| OpenLvError::Session("peer cipher not ready".into()))?;
+        let plaintext = cipher.decrypt(&raw)?;
         self.handle_session_frame(&plaintext)
     }
 
@@ -776,16 +934,11 @@ impl SessionInner {
 
     async fn send_session_message(&self, message: &SessionMessage) -> Result<(), OpenLvError> {
         let plaintext = serde_json::to_string(message)?;
-        let encrypted = {
-            let relying_key = self
-                .relying_key
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let relying_key = relying_key
-                .as_ref()
-                .ok_or_else(|| OpenLvError::Session("relying party public key not found".into()))?;
-            self.decryption_key.encrypt(&plaintext, relying_key)?
-        };
+        let cipher = self
+            .signaling
+            .peer_cipher()
+            .ok_or_else(|| OpenLvError::Session("peer cipher not ready".into()))?;
+        let encrypted = cipher.encrypt(&plaintext)?;
 
         self.transport.send(&encrypted).await
     }

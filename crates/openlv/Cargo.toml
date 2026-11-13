@@ -44,7 +44,6 @@ rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 sha2 = "0.10"
-aead = "0.5"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
 url = "2"
