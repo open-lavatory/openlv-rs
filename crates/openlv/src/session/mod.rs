@@ -467,10 +467,9 @@ impl SessionInner {
             .spawn(Arc::clone(self).run_signal_state_loop())?;
         self.control
             .spawn(Arc::clone(self).run_signal_message_loop())?;
+        let state_rx = self.transport.subscribe_state();
         self.control
-            .spawn(Arc::clone(self).run_transport_state_loop())?;
-        self.control
-            .spawn(Arc::clone(self).run_transport_event_loop(transport_events))?;
+            .spawn(Arc::clone(self).run_transport_loop(transport_events, state_rx))?;
         Ok(())
     }
 
@@ -646,33 +645,47 @@ impl SessionInner {
         }
     }
 
-    async fn run_transport_state_loop(self: Arc<Self>) {
-        let mut state_rx = self.transport.subscribe_state();
-        while let Ok(state) = state_rx.recv().await {
-            match state {
-                TransportState::Connected => self.set_status(SessionState::Connected),
-                TransportState::Error => {
-                    self.set_transport_error();
-                    self.set_status(SessionState::Disconnected);
-                    return;
-                }
-                _ => {}
+    async fn run_transport_loop(
+        self: Arc<Self>,
+        mut events: mpsc::Receiver<TransportEvent>,
+        mut state_rx: broadcast::Receiver<TransportState>,
+    ) {
+        let mut watching_state = true;
+
+        loop {
+            tokio::select! {
+                event = events.recv() => match event {
+                    Some(event) => self.handle_transport_event(event).await,
+                    None => return,
+                },
+                state = state_rx.recv(), if watching_state => match state {
+                    Ok(TransportState::Connected) => self.set_status(SessionState::Connected),
+                    Ok(TransportState::Error) => {
+                        // The transport queues a frame before it reports `Error`, so a peer `Close` is already queued.
+                        while let Ok(event) = events.try_recv() {
+                            self.handle_transport_event(event).await;
+                        }
+                        self.set_transport_error();
+                        self.set_status(SessionState::Disconnected);
+                        watching_state = false;
+                    }
+                    Ok(_) => {}
+                    Err(_) => watching_state = false,
+                },
             }
         }
     }
 
-    async fn run_transport_event_loop(self: Arc<Self>, mut events: mpsc::Receiver<TransportEvent>) {
-        while let Some(event) = events.recv().await {
-            match event {
-                TransportEvent::Negotiation(negotiation) => {
-                    if let Err(error) = self.relay_negotiation(negotiation).await {
-                        tracing::warn!("failed to relay negotiation over signaling: {error}");
-                    }
+    async fn handle_transport_event(self: &Arc<Self>, event: TransportEvent) {
+        match event {
+            TransportEvent::Negotiation(negotiation) => {
+                if let Err(error) = self.relay_negotiation(negotiation).await {
+                    tracing::warn!("failed to relay negotiation over signaling: {error}");
                 }
-                TransportEvent::Message(raw) => {
-                    if let Err(error) = self.handle_transport_payload(raw).await {
-                        tracing::warn!("failed to handle transport message: {error}");
-                    }
+            }
+            TransportEvent::Message(raw) => {
+                if let Err(error) = self.handle_transport_payload(raw).await {
+                    tracing::warn!("failed to handle transport message: {error}");
                 }
             }
         }
